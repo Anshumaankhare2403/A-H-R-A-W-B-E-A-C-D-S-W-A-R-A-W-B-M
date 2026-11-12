@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "author": "Anshumaan Khare",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-devkit-c-v4",
+      "id": "esp",
+      "top": -20,
+      "left": 50,
+      "attrs": { "env": "micropython-20231227-v1.22.0" }
+    },
+    { "type": "wokwi-potentiometer", "id": "pot1", "top": 100, "left": 300, "attrs": {} },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "camBtn",
+      "top": 303.8,
+      "left": 67.2,
+      "attrs": { "color": "red" }
+    },
+    { "type": "wokwi-led", "id": "redLed", "top": 50, "left": 430, "attrs": { "color": "red" } },
+    {
+      "type": "wokwi-led",
+      "id": "yellowLed",
+      "top": 100,
+      "left": 430,
+      "attrs": { "color": "yellow" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "greenLed",
+      "top": 150,
+      "left": 430,
+      "attrs": { "color": "green" }
+    },
+    { "type": "wokwi-buzzer", "id": "bz1", "top": 200, "left": 430, "attrs": { "volume": "0.1" } },
+    {
+      "type": "board-ssd1306",
+      "id": "oled1",
+      "top": -60,
+      "left": 350,
+      "attrs": { "i2cAddress": "0x3c" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "pot1:VCC", "esp:3V3", "red", [] ],
+    [ "pot1:GND", "esp:GND.1", "black", [] ],
+    [ "pot1:SIG", "esp:34", "green", [] ],
+    [ "camBtn:1.l", "esp:33", "blue", [] ],
+    [ "camBtn:2.l", "esp:GND.1", "black", [] ],
+    [ "redLed:A", "esp:25", "red", [] ],
+    [ "redLed:C", "esp:GND.1", "black", [] ],
+    [ "yellowLed:A", "esp:26", "yellow", [] ],
+    [ "yellowLed:C", "esp:GND.1", "black", [] ],
+    [ "greenLed:A", "esp:27", "green", [] ],
+    [ "greenLed:C", "esp:GND.1", "black", [] ],
+    [ "bz1:1", "esp:14", "purple", [] ],
+    [ "bz1:2", "esp:GND.1", "black", [] ],
+    [ "oled1:VCC", "esp:3V3", "red", [] ],
+    [ "oled1:GND", "esp:GND.1", "black", [] ],
+    [ "oled1:SDA", "esp:21", "blue", [] ],
+    [ "oled1:SCL", "esp:22", "orange", [] ]
+  ],
+  "dependencies": {}
+}
