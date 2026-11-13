@@ -1,80 +1,53 @@
 import mqtt from 'mqtt';
 import config from './environment.js';
 
-let mqttClient = null;
-let isConnected = false;
+let client = null;
 
-export function getMqttClient() {
-  return mqttClient;
-}
+export function getMqttClient(customBrokerUrl = null, options = {}) {
+  if (client && client.connected) {
+    return client;
+  }
 
-export function isMqttConnected() {
-  return isConnected;
-}
-
-export function connectMqtt(options = {}) {
-  const brokerUrl = options.brokerUrl || config.mqtt.brokerUrl;
+  const brokerUrl = customBrokerUrl || config.mqtt.brokerUrl;
   const clientOptions = {
-    clientId: options.clientId || config.mqtt.clientId,
+    clientId: config.mqtt.clientId,
     clean: true,
-    connectTimeout: 5000,
-    reconnectPeriod: 3000,
-    keepalive: 60,
+    connectTimeout: config.mqtt.connectTimeout,
+    reconnectPeriod: config.mqtt.reconnectPeriod,
     ...options
   };
 
-  if (config.mqtt.username) {
-    clientOptions.username = config.mqtt.username;
-    clientOptions.password = config.mqtt.password;
-  }
+  console.log(`[MQTT] Connecting to broker at ${brokerUrl}...`);
+  client = mqtt.connect(brokerUrl, clientOptions);
 
-  console.log(`[MQTT] Connecting to broker at ${brokerUrl} with Client ID: ${clientOptions.clientId}...`);
-
-  mqttClient = mqtt.connect(brokerUrl, clientOptions);
-
-  mqttClient.on('connect', () => {
-    isConnected = true;
-    console.log(`[MQTT] Successfully connected to broker at ${brokerUrl}`);
+  client.on('connect', () => {
+    console.log(`[MQTT] Successfully connected to broker (${brokerUrl})`);
   });
 
-  mqttClient.on('reconnect', () => {
-    console.log('[MQTT] Attempting reconnection to MQTT broker...');
+  client.on('reconnect', () => {
+    console.warn('[MQTT] Attempting to reconnect to broker...');
   });
 
-  mqttClient.on('close', () => {
-    isConnected = false;
-    console.warn('[MQTT] Connection closed to MQTT broker.');
+  client.on('offline', () => {
+    console.warn('[MQTT] Broker connection went offline');
   });
 
-  mqttClient.on('offline', () => {
-    isConnected = false;
-    console.warn('[MQTT] Client went offline.');
+  client.on('error', (err) => {
+    console.error(`[MQTT] Broker error: ${err.message}`);
   });
 
-  mqttClient.on('error', (err) => {
-    isConnected = false;
-    console.error(`[MQTT] Error: ${err.message}`);
-  });
-
-  return mqttClient;
+  return client;
 }
 
-export async function disconnectMqtt() {
-  if (mqttClient) {
-    return new Promise((resolve) => {
-      mqttClient.end(false, () => {
-        isConnected = false;
-        console.log('[MQTT] Gracefully disconnected from broker.');
-        resolve();
-      });
+export function closeMqttClient() {
+  return new Promise((resolve) => {
+    if (!client) return resolve();
+    client.end(false, () => {
+      console.log('[MQTT] Client disconnected cleanly');
+      client = null;
+      resolve();
     });
-  }
+  });
 }
 
-export default {
-  connectMqtt,
-  disconnectMqtt,
-  getMqttClient,
-  isMqttConnected
-};
-
+export default { getMqttClient, closeMqttClient };

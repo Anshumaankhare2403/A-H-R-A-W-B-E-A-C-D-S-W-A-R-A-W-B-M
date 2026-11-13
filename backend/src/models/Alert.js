@@ -27,10 +27,18 @@ const alertSchema = new mongoose.Schema(
       type: [String],
       default: []
     },
+    cameraButton: {
+      type: Boolean,
+      default: false
+    },
     acknowledged: {
       type: Boolean,
       default: false,
       index: true
+    },
+    acknowledgedAt: {
+      type: Date,
+      default: null
     },
     occurredAt: {
       type: Date,
@@ -39,14 +47,12 @@ const alertSchema = new mongoose.Schema(
     }
   },
   {
-    timestamps: true
+    timestamps: true,
+    versionKey: false
   }
 );
 
-// Compound indexes
-alertSchema.index({ deviceId: 1, occurredAt: -1 });
-alertSchema.index({ acknowledged: 1, severity: 1, occurredAt: -1 });
+alertSchema.index({ deviceId: 1, acknowledged: 1, occurredAt: -1 });
 
-export const Alert = mongoose.models.Alert || mongoose.model('Alert', alertSchema);
+export const Alert = mongoose.model('Alert', alertSchema);
 export default Alert;
-

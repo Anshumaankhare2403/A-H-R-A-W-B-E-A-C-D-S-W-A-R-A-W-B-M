@@ -24,8 +24,8 @@ const telemetrySchema = new mongoose.Schema(
       index: true
     },
     deviceTimestamp: {
-      type: Date,
-      default: Date.now
+      type: Number,
+      required: [true, 'Device timestamp is required']
     },
     receivedAt: {
       type: Date,
@@ -47,7 +47,11 @@ const telemetrySchema = new mongoose.Schema(
     },
     suspiciousSSID: {
       type: Boolean,
-      required: true
+      default: false
+    },
+    suspiciousSSIDList: {
+      type: [String],
+      default: []
     },
     cameraButton: {
       type: Boolean,
@@ -56,19 +60,17 @@ const telemetrySchema = new mongoose.Schema(
     riskLevel: {
       type: String,
       enum: ['SAFE', 'LOW', 'MEDIUM', 'HIGH'],
-      required: [true, 'Risk level is required'],
+      required: [true, 'Calculated riskLevel is required'],
       index: true
     }
   },
   {
-    timestamps: false
+    timestamps: true,
+    versionKey: false
   }
 );
 
-// Compound indexes for fast historical queries and time-series aggregation
 telemetrySchema.index({ deviceId: 1, receivedAt: -1 });
-telemetrySchema.index({ riskLevel: 1, receivedAt: -1 });
 
-export const Telemetry = mongoose.models.Telemetry || mongoose.model('Telemetry', telemetrySchema);
+export const Telemetry = mongoose.model('Telemetry', telemetrySchema);
 export default Telemetry;
-

@@ -1,68 +1,46 @@
-/**
- * Validates incoming telemetry payload format and field types.
- *
- * @param {Object} payload
- * @returns {{ valid: boolean, error?: string, sanitized?: Object }}
- */
 export function validateTelemetryPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { valid: false, error: 'Telemetry payload must be a non-null JSON object' };
+    return { isValid: false, error: 'Payload must be a valid JSON object' };
   }
 
-  const { deviceId, timestamp, rfValue, wifiNetworks, cameraButton } = payload;
+  if (!payload.deviceId || typeof payload.deviceId !== 'string' || !payload.deviceId.trim()) {
+    return { isValid: false, error: 'Field "deviceId" is required and must be a non-empty string' };
+  }
+  const deviceId = payload.deviceId.trim();
 
-  if (!deviceId || typeof deviceId !== 'string' || !deviceId.trim()) {
-    return { valid: false, error: 'Missing or invalid "deviceId" (string required)' };
+  let timestamp = Number(payload.timestamp);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    timestamp = Math.floor(Date.now() / 1000);
   }
 
-  const parsedRf = Number(rfValue);
-  if (rfValue === undefined || rfValue === null || isNaN(parsedRf) || parsedRf < 0) {
-    return { valid: false, error: 'Missing or invalid "rfValue" (non-negative number required)' };
+  if (payload.rfValue === undefined || payload.rfValue === null) {
+    return { isValid: false, error: 'Field "rfValue" is required' };
+  }
+  const rfValue = Number(payload.rfValue);
+  if (!Number.isFinite(rfValue) || rfValue < 0) {
+    return { isValid: false, error: 'Field "rfValue" must be a non-negative number' };
   }
 
-  // Parse device timestamp (epoch seconds or milliseconds or ISO string)
-  let parsedTimestamp = new Date();
-  if (timestamp) {
-    if (typeof timestamp === 'number') {
-      // If seconds (10 digits), convert to ms
-      parsedTimestamp = new Date(timestamp < 1e11 ? timestamp * 1000 : timestamp);
-    } else {
-      const parsedDate = new Date(timestamp);
-      if (!isNaN(parsedDate.getTime())) {
-        parsedTimestamp = parsedDate;
-      }
+  let wifiNetworks = [];
+  if (payload.wifiNetworks !== undefined && payload.wifiNetworks !== null) {
+    if (!Array.isArray(payload.wifiNetworks)) {
+      return { isValid: false, error: 'Field "wifiNetworks" must be an array' };
     }
+    wifiNetworks = payload.wifiNetworks;
   }
 
-  // Normalize wifiNetworks
-  const sanitizedNetworks = [];
-  if (Array.isArray(wifiNetworks)) {
-    for (const net of wifiNetworks) {
-      if (!net) continue;
-      if (typeof net === 'string') {
-        sanitizedNetworks.push({ ssid: net.trim(), suspicious: false });
-      } else if (typeof net === 'object' && net.ssid && typeof net.ssid === 'string') {
-        sanitizedNetworks.push({
-          ssid: net.ssid.trim(),
-          suspicious: Boolean(net.suspicious)
-        });
-      }
-    }
-  }
+  const cameraButton = Boolean(payload.cameraButton);
 
   return {
-    valid: true,
+    isValid: true,
     sanitized: {
-      deviceId: deviceId.trim(),
-      deviceTimestamp: parsedTimestamp,
-      rfValue: parsedRf,
-      wifiNetworks: sanitizedNetworks,
-      cameraButton: Boolean(cameraButton)
+      deviceId,
+      timestamp,
+      rfValue,
+      wifiNetworks,
+      cameraButton
     }
   };
 }
 
-export default {
-  validateTelemetryPayload
-};
-
+export default { validateTelemetryPayload };

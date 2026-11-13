@@ -13,13 +13,13 @@ const deviceSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: function () {
-        return `ESP32-${this.deviceId}`;
+        return this?.deviceId ? `Device-${this.deviceId}` : 'Device-unnamed';
       }
     },
     status: {
       type: String,
-      enum: ['online', 'offline', 'warning', 'error'],
-      default: 'online',
+      enum: ['ONLINE', 'OFFLINE', 'WARNING', 'ALERT'],
+      default: 'ONLINE',
       index: true
     },
     lastSeen: {
@@ -39,13 +39,35 @@ const deviceSchema = new mongoose.Schema(
     }
   },
   {
-    timestamps: true
+    timestamps: true,
+    versionKey: false
   }
 );
 
-// Indexes
-deviceSchema.index({ status: 1, lastSeen: -1 });
+deviceSchema.statics.upsertOnTelemetry = async function (deviceId, rfValue, riskLevel) {
+  let status = 'ONLINE';
+  if (riskLevel === 'HIGH') {
+    status = 'ALERT';
+  } else if (riskLevel === 'MEDIUM' || riskLevel === 'LOW') {
+    status = 'WARNING';
+  }
 
-export const Device = mongoose.models.Device || mongoose.model('Device', deviceSchema);
+  return this.findOneAndUpdate(
+    { deviceId },
+    {
+      $set: {
+        lastSeen: new Date(),
+        latestRfValue: rfValue,
+        latestRisk: riskLevel,
+        status
+      },
+      $setOnInsert: {
+        name: `Device-${deviceId}`
+      }
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+};
+
+export const Device = mongoose.model('Device', deviceSchema);
 export default Device;
-

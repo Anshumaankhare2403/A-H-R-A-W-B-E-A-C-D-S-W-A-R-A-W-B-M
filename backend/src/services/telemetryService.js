@@ -1,134 +1,112 @@
-import Device from '../models/Device.js';
-import Telemetry from '../models/Telemetry.js';
-import Alert from '../models/Alert.js';
+import { Device } from '../models/Device.js';
+import { Telemetry } from '../models/Telemetry.js';
+import { Alert } from '../models/Alert.js';
 import { calculateRisk } from './riskEngine.js';
 import { validateTelemetryPayload } from '../utils/validators.js';
 import {
-  broadcastTelemetry,
-  broadcastStatus,
-  broadcastRiskChanged,
-  broadcastAlert
+  emitTelemetry,
+  emitDeviceStatus,
+  emitRiskChanged,
+  emitAlert
 } from '../sockets/socketHandler.js';
 
-// Cooldown window in ms for duplicate identical alerts (e.g., 5 minutes)
-const ALERT_DUPLICATE_COOLDOWN_MS = 5 * 60 * 1000;
+function buildAlertMessage(deviceId, riskLevel, rfAnomaly, rfValue, suspiciousSSIDList, cameraButton) {
+  if (cameraButton) {
+    return `[CRITICAL] Manual camera alert triggered on device ${deviceId} (RF: ${rfValue}).`;
+  }
+  if (riskLevel === 'HIGH') {
+    return `[HIGH RISK] Suspicious RF anomaly (${rfValue}) AND suspicious Wi-Fi detected (${suspiciousSSIDList.join(', ')}) on ${deviceId}.`;
+  }
+  if (riskLevel === 'MEDIUM') {
+    return `[MEDIUM RISK] Elevated RF signal anomaly detected (${rfValue}) on ${deviceId}.`;
+  }
+  if (riskLevel === 'LOW') {
+    return `[LOW RISK] Suspicious Wi-Fi network SSID detected (${suspiciousSSIDList.join(', ')}) on ${deviceId}.`;
+  }
+  return `Normal operation on ${deviceId}.`;
+}
 
-/**
- * Ingestion and processing service for incoming ESP32 telemetry.
- *
- * @param {Object} rawPayload - Raw incoming message from MQTT or REST API
- * @returns {Promise<Object>} Processed records
- */
 export async function processTelemetry(rawPayload) {
-  // 1. Validate payload
   const validation = validateTelemetryPayload(rawPayload);
-  if (!validation.valid) {
-    const error = new Error(`Telemetry validation failed: ${validation.error}`);
-    error.statusCode = 400;
-    throw error;
+  if (!validation.isValid) {
+    console.warn(`[TelemetryService] Rejected invalid telemetry payload: ${validation.error}`);
+    return { success: false, error: validation.error };
   }
 
-  const { deviceId, deviceTimestamp, rfValue, wifiNetworks, cameraButton } = validation.sanitized;
+  const { deviceId, timestamp, rfValue, wifiNetworks, cameraButton } = validation.sanitized;
 
-  // 2. Authoritative Risk Calculation
-  const riskResult = calculateRisk({
+  const riskAnalysis = calculateRisk({
     rfValue,
     wifiNetworks,
     cameraButton
   });
 
-  const { rfAnomaly, suspiciousSSID, riskLevel, suspiciousNetworks } = riskResult;
+  const { riskLevel, rfAnomaly, suspiciousSSID, suspiciousSSIDList, annotatedNetworks } = riskAnalysis;
 
-  // 3. Register or Update Device Record
-  let device = await Device.findOne({ deviceId });
-  let previousRisk = 'SAFE';
-  let isNewDevice = false;
+  const existingDevice = await Device.findOne({ deviceId });
+  const previousRisk = existingDevice ? existingDevice.latestRisk : null;
+  const isFirstSeen = !existingDevice;
 
-  if (!device) {
-    isNewDevice = true;
-    device = new Device({
-      deviceId,
-      name: `ESP32-${deviceId}`,
-      status: 'online',
-      lastSeen: new Date(),
-      latestRisk: riskLevel,
-      latestRfValue: rfValue
-    });
-  } else {
-    previousRisk = device.latestRisk;
-    device.status = 'online';
-    device.lastSeen = new Date();
-    device.latestRisk = riskLevel;
-    device.latestRfValue = rfValue;
-  }
-
-  await device.save();
-
-  // 4. Persist Telemetry History Record
-  const telemetryDoc = new Telemetry({
+  const telemetryDoc = await Telemetry.create({
     deviceId,
-    deviceTimestamp,
-    receivedAt: new Date(),
+    deviceTimestamp: timestamp,
     rfValue,
     rfAnomaly,
-    wifiNetworks,
+    wifiNetworks: annotatedNetworks,
     suspiciousSSID,
+    suspiciousSSIDList,
     cameraButton,
     riskLevel
   });
 
-  await telemetryDoc.save();
+  const updatedDevice = await Device.upsertOnTelemetry(deviceId, rfValue, riskLevel);
 
-  // 5. Alert Generation with Duplicate Suppression
   let createdAlert = null;
   const isNonSafe = riskLevel !== 'SAFE';
-  const riskChanged = previousRisk !== riskLevel;
 
   if (isNonSafe) {
-    // Check if an unacknowledged alert of identical severity exists within cooldown
-    const cooldownCutoff = new Date(Date.now() - ALERT_DUPLICATE_COOLDOWN_MS);
-    const existingRecentAlert = await Alert.findOne({
+    const riskChanged = previousRisk !== riskLevel;
+
+    const existingActiveAlert = await Alert.findOne({
       deviceId,
       severity: riskLevel,
-      acknowledged: false,
-      occurredAt: { $gte: cooldownCutoff }
+      acknowledged: false
     }).sort({ occurredAt: -1 });
 
-    const shouldCreateAlert = cameraButton || riskChanged || !existingRecentAlert;
+    const shouldCreateAlert = riskChanged || cameraButton || !existingActiveAlert || isFirstSeen;
 
     if (shouldCreateAlert) {
-      let alertMsg = `Risk condition detected: ${riskLevel}`;
-      if (cameraButton) {
-        alertMsg = 'Manual camera detection button triggered by user';
-      } else if (riskLevel === 'HIGH') {
-        alertMsg = `CRITICAL: Elevated RF anomaly (${rfValue}) and suspicious hidden camera SSIDs detected (${suspiciousNetworks.join(', ')})`;
-      } else if (riskLevel === 'MEDIUM') {
-        alertMsg = `WARNING: Elevated RF signal anomaly detected (${rfValue})`;
-      } else if (riskLevel === 'LOW') {
-        alertMsg = `NOTICE: Suspicious hidden camera Wi-Fi SSID(s) detected (${suspiciousNetworks.join(', ')})`;
-      }
+      const alertMessage = buildAlertMessage(
+        deviceId,
+        riskLevel,
+        rfAnomaly,
+        rfValue,
+        suspiciousSSIDList,
+        cameraButton
+      );
 
-      createdAlert = new Alert({
+      createdAlert = await Alert.create({
         deviceId,
         severity: riskLevel,
-        message: alertMsg,
+        message: alertMessage,
         rfValue,
-        suspiciousSSIDs: suspiciousNetworks,
-        acknowledged: false,
-        occurredAt: new Date()
+        suspiciousSSIDs: suspiciousSSIDList,
+        cameraButton,
+        acknowledged: false
       });
 
-      await createdAlert.save();
-      broadcastAlert(createdAlert.toObject());
+      console.log(`[TelemetryService] New Alert created for ${deviceId} [Severity: ${riskLevel}]: ${alertMessage}`);
+      emitAlert(createdAlert);
+    } else {
+      console.log(`[TelemetryService] Duplicate alert suppressed for ${deviceId} (Risk remaining unchanged at ${riskLevel})`);
     }
   }
 
-  // 6. Broadcast Real-time Events
-  broadcastTelemetry(telemetryDoc.toObject());
-  broadcastStatus(device.toObject());
+  emitTelemetry(telemetryDoc);
+  emitDeviceStatus(updatedDevice);
 
-  if (riskChanged) {
-    broadcastRiskChanged({
+  if (previousRisk && previousRisk !== riskLevel) {
+    emitRiskChanged({
       deviceId,
       previousRisk,
       newRisk: riskLevel,
@@ -139,16 +117,10 @@ export async function processTelemetry(rawPayload) {
 
   return {
     success: true,
-    isNewDevice,
-    device: device.toObject(),
-    telemetry: telemetryDoc.toObject(),
-    alert: createdAlert ? createdAlert.toObject() : null,
-    riskChanged
+    telemetry: telemetryDoc,
+    device: updatedDevice,
+    alert: createdAlert
   };
 }
 
-export default {
-  processTelemetry,
-  ALERT_DUPLICATE_COOLDOWN_MS
-};
-
+export default { processTelemetry };

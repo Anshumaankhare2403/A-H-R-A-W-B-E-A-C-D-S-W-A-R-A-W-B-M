@@ -1,67 +1,281 @@
 {
   "version": 1,
-  "author": "Anshumaan Khare",
+  "author": "Engineering Team",
   "editor": "wokwi",
   "parts": [
     {
-      "type": "board-esp32-devkit-c-v4",
+      "type": "wokwi-esp32-devkit-v1",
       "id": "esp",
-      "top": -20,
-      "left": 50,
-      "attrs": { "env": "micropython-20231227-v1.22.0" }
+      "top": 0,
+      "left": 0,
+      "attrs": {}
     },
-    { "type": "wokwi-potentiometer", "id": "pot1", "top": 100, "left": 300, "attrs": {} },
+    {
+      "type": "wokwi-potentiometer",
+      "id": "pot_rf",
+      "top": -120,
+      "left": -160,
+      "attrs": {
+        "label": "RF Signal (0-4095)"
+      }
+    },
     {
       "type": "wokwi-pushbutton",
-      "id": "camBtn",
-      "top": 303.8,
-      "left": 67.2,
-      "attrs": { "color": "red" }
+      "id": "btn_alert",
+      "top": -80,
+      "left": 160,
+      "attrs": {
+        "color": "red",
+        "label": "Manual Alert (GPIO33)"
+      }
     },
-    { "type": "wokwi-led", "id": "redLed", "top": 50, "left": 430, "attrs": { "color": "red" } },
     {
       "type": "wokwi-led",
-      "id": "yellowLed",
+      "id": "led_red",
+      "top": 160,
+      "left": -140,
+      "attrs": {
+        "color": "red",
+        "label": "HIGH Risk"
+      }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_yellow",
+      "top": 160,
+      "left": -80,
+      "attrs": {
+        "color": "yellow",
+        "label": "MED/LOW Risk"
+      }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_green",
+      "top": 160,
+      "left": -20,
+      "attrs": {
+        "color": "green",
+        "label": "SAFE"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r_red",
       "top": 100,
-      "left": 430,
-      "attrs": { "color": "yellow" }
+      "left": -140,
+      "attrs": {
+        "value": "220"
+      }
     },
     {
-      "type": "wokwi-led",
-      "id": "greenLed",
-      "top": 150,
-      "left": 430,
-      "attrs": { "color": "green" }
+      "type": "wokwi-resistor",
+      "id": "r_yellow",
+      "top": 100,
+      "left": -80,
+      "attrs": {
+        "value": "220"
+      }
     },
-    { "type": "wokwi-buzzer", "id": "bz1", "top": 200, "left": 430, "attrs": { "volume": "0.1" } },
     {
-      "type": "board-ssd1306",
-      "id": "oled1",
-      "top": -60,
-      "left": 350,
-      "attrs": { "i2cAddress": "0x3c" }
+      "type": "wokwi-resistor",
+      "id": "r_green",
+      "top": 100,
+      "left": -20,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-buzzer",
+      "id": "buzzer",
+      "top": 160,
+      "left": 120,
+      "attrs": {
+        "volume": "0.5"
+      }
+    },
+    {
+      "type": "wokwi-ssd1306",
+      "id": "oled",
+      "top": -140,
+      "left": 20,
+      "attrs": {}
     }
   ],
   "connections": [
-    [ "esp:TX", "$serialMonitor:RX", "", [] ],
-    [ "esp:RX", "$serialMonitor:TX", "", [] ],
-    [ "pot1:VCC", "esp:3V3", "red", [] ],
-    [ "pot1:GND", "esp:GND.1", "black", [] ],
-    [ "pot1:SIG", "esp:34", "green", [] ],
-    [ "camBtn:1.l", "esp:33", "blue", [] ],
-    [ "camBtn:2.l", "esp:GND.1", "black", [] ],
-    [ "redLed:A", "esp:25", "red", [] ],
-    [ "redLed:C", "esp:GND.1", "black", [] ],
-    [ "yellowLed:A", "esp:26", "yellow", [] ],
-    [ "yellowLed:C", "esp:GND.1", "black", [] ],
-    [ "greenLed:A", "esp:27", "green", [] ],
-    [ "greenLed:C", "esp:GND.1", "black", [] ],
-    [ "bz1:1", "esp:14", "purple", [] ],
-    [ "bz1:2", "esp:GND.1", "black", [] ],
-    [ "oled1:VCC", "esp:3V3", "red", [] ],
-    [ "oled1:GND", "esp:GND.1", "black", [] ],
-    [ "oled1:SDA", "esp:21", "blue", [] ],
-    [ "oled1:SCL", "esp:22", "orange", [] ]
+    [
+      "esp:TX",
+      "$serialMonitor:RX",
+      "",
+      []
+    ],
+    [
+      "esp:RX",
+      "$serialMonitor:TX",
+      "",
+      []
+    ],
+    [
+      "pot_rf:GND",
+      "esp:GND.1",
+      "black",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "pot_rf:VCC",
+      "esp:3V3",
+      "red",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "pot_rf:SIG",
+      "esp:D34",
+      "purple",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "btn_alert:1.l",
+      "esp:D33",
+      "orange",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "btn_alert:2.l",
+      "esp:GND.1",
+      "black",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "esp:D25",
+      "r_red:1",
+      "red",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "r_red:2",
+      "led_red:A",
+      "red",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "led_red:C",
+      "esp:GND.1",
+      "black",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "esp:D26",
+      "r_yellow:1",
+      "gold",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "r_yellow:2",
+      "led_yellow:A",
+      "gold",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "led_yellow:C",
+      "esp:GND.1",
+      "black",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "esp:D27",
+      "r_green:1",
+      "green",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "r_green:2",
+      "led_green:A",
+      "green",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "led_green:C",
+      "esp:GND.1",
+      "black",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "esp:D14",
+      "buzzer:2",
+      "blue",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "buzzer:1",
+      "esp:GND.2",
+      "black",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "oled:GND",
+      "esp:GND.2",
+      "black",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "oled:VCC",
+      "esp:3V3",
+      "red",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "oled:SCL",
+      "esp:D22",
+      "yellow",
+      [
+        "v0"
+      ]
+    ],
+    [
+      "oled:SDA",
+      "esp:D21",
+      "green",
+      [
+        "v0"
+      ]
+    ]
   ],
   "dependencies": {}
 }

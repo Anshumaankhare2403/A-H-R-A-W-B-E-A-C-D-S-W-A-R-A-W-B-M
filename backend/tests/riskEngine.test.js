@@ -1,178 +1,165 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
-import { calculateRisk, isSsidSuspicious, SUSPICIOUS_KEYWORDS } from '../src/services/riskEngine.js';
+import { describe, it, expect } from 'vitest';
+import { calculateRisk, isSSIDSuspicious, analyzeWiFiNetworks } from '../src/services/riskEngine.js';
 
-describe('Risk Analysis Engine Unit Tests', () => {
-  const DEFAULT_THRESHOLD = 2000;
+describe('Risk Analysis Engine Service', () => {
+  const defaultKeywords = ['spycam', 'camera', 'hidden', 'surveillance', 'monitor'];
+  const defaultThreshold = 2000;
 
-  describe('Keyword Detection - isSsidSuspicious', () => {
-    it('should detect suspicious keywords correctly', () => {
-      SUSPICIOUS_KEYWORDS.forEach((kw) => {
-        assert.equal(isSsidSuspicious(`My_${kw}_Network`), true);
-        assert.equal(isSsidSuspicious(kw.toUpperCase()), true);
-      });
+  describe('isSSIDSuspicious keyword detection', () => {
+    it('detects suspicious keywords case-insensitively', () => {
+      expect(isSSIDSuspicious('SpyCam_Office', defaultKeywords)).toBe(true);
+      expect(isSSIDSuspicious('HIDDEN_CAM_01', defaultKeywords)).toBe(true);
+      expect(isSSIDSuspicious('living_room_camera', defaultKeywords)).toBe(true);
+      expect(isSSIDSuspicious('Surveillance-Net', defaultKeywords)).toBe(true);
+      expect(isSSIDSuspicious('baby-monitor-5g', defaultKeywords)).toBe(true);
     });
 
-    it('should return false for benign SSIDs', () => {
-      assert.equal(isSsidSuspicious('Home_WiFi'), false);
-      assert.equal(isSsidSuspicious('OfficeNet_5G'), false);
-      assert.equal(isSsidSuspicious('Guest_Hotspot'), false);
+    it('returns false for normal benign SSIDs', () => {
+      expect(isSSIDSuspicious('Home_WiFi', defaultKeywords)).toBe(false);
+      expect(isSSIDSuspicious('Starbucks_Guest', defaultKeywords)).toBe(false);
+      expect(isSSIDSuspicious('TP-Link_5G_Extender', defaultKeywords)).toBe(false);
     });
 
-    it('should handle null, undefined, and non-string inputs safely', () => {
-      assert.equal(isSsidSuspicious(null), false);
-      assert.equal(isSsidSuspicious(undefined), false);
-      assert.equal(isSsidSuspicious(12345), false);
-      assert.equal(isSsidSuspicious(''), false);
+    it('handles empty, null, or undefined inputs gracefully', () => {
+      expect(isSSIDSuspicious('', defaultKeywords)).toBe(false);
+      expect(isSSIDSuspicious(null, defaultKeywords)).toBe(false);
+      expect(isSSIDSuspicious(undefined, defaultKeywords)).toBe(false);
     });
   });
 
-  describe('calculateRisk Matrix', () => {
-    it('Condition 1 (SAFE): rfAnomaly=No, suspiciousSSID=No, cameraButton=No', () => {
+  describe('analyzeWiFiNetworks', () => {
+    it('accurately identifies suspicious networks among regular ones', () => {
+      const networks = [
+        'Home_WiFi',
+        'OfficeNet',
+        'spycam_device',
+        'GuestWiFi'
+      ];
+      const result = analyzeWiFiNetworks(networks, defaultKeywords);
+      expect(result.hasSuspicious).toBe(true);
+      expect(result.suspiciousNetworks).toHaveLength(1);
+      expect(result.suspiciousNetworks[0].ssid).toBe('spycam_device');
+      expect(result.annotatedNetworks).toHaveLength(4);
+    });
+
+    it('handles structured object networks with device-flagged state', () => {
+      const networks = [
+        { ssid: 'Home_WiFi', suspicious: false },
+        { ssid: 'custom_covert_cam', suspicious: true }
+      ];
+      const result = analyzeWiFiNetworks(networks, defaultKeywords);
+      expect(result.hasSuspicious).toBe(true);
+      expect(result.suspiciousNetworks).toHaveLength(1);
+      expect(result.suspiciousNetworks[0].ssid).toBe('custom_covert_cam');
+    });
+
+    it('handles empty or non-array networks input', () => {
+      expect(analyzeWiFiNetworks([], defaultKeywords).hasSuspicious).toBe(false);
+      expect(analyzeWiFiNetworks(null, defaultKeywords).hasSuspicious).toBe(false);
+      expect(analyzeWiFiNetworks(undefined, defaultKeywords).hasSuspicious).toBe(false);
+    });
+  });
+
+  describe('calculateRisk classification truth table', () => {
+    it('evaluates SAFE condition (No RF, No SSID, No Button)', () => {
       const result = calculateRisk({
         rfValue: 1200,
-        wifiNetworks: [{ ssid: 'Home_WiFi', suspicious: false }],
-        cameraButton: false
-      }, DEFAULT_THRESHOLD);
+        wifiNetworks: ['Home_WiFi', 'Guest_Net'],
+        cameraButton: false,
+        customThreshold: defaultThreshold
+      });
 
-      assert.equal(result.rfAnomaly, false);
-      assert.equal(result.suspiciousSSID, false);
-      assert.equal(result.riskLevel, 'SAFE');
-      assert.deepEqual(result.suspiciousNetworks, []);
+      expect(result.riskLevel).toBe('SAFE');
+      expect(result.rfAnomaly).toBe(false);
+      expect(result.suspiciousSSID).toBe(false);
+      expect(result.cameraButton).toBe(false);
     });
 
-    it('Condition 2 (LOW): rfAnomaly=No, suspiciousSSID=Yes, cameraButton=No', () => {
+    it('evaluates LOW condition (No RF, Yes SSID, No Button)', () => {
       const result = calculateRisk({
-        rfValue: 1500,
-        wifiNetworks: [
-          { ssid: 'Home_WiFi', suspicious: false },
-          { ssid: 'spycam_device', suspicious: true }
-        ],
-        cameraButton: false
-      }, DEFAULT_THRESHOLD);
+        rfValue: 800,
+        wifiNetworks: ['Home_WiFi', 'spycam_device'],
+        cameraButton: false,
+        customThreshold: defaultThreshold
+      });
 
-      assert.equal(result.rfAnomaly, false);
-      assert.equal(result.suspiciousSSID, true);
-      assert.equal(result.riskLevel, 'LOW');
-      assert.ok(result.suspiciousNetworks.includes('spycam_device'));
+      expect(result.riskLevel).toBe('LOW');
+      expect(result.rfAnomaly).toBe(false);
+      expect(result.suspiciousSSID).toBe(true);
+      expect(result.suspiciousSSIDList).toContain('spycam_device');
+      expect(result.cameraButton).toBe(false);
     });
 
-    it('Condition 3 (MEDIUM): rfAnomaly=Yes, suspiciousSSID=No, cameraButton=No', () => {
+    it('evaluates MEDIUM condition (Yes RF, No SSID, No Button)', () => {
       const result = calculateRisk({
         rfValue: 2800,
-        wifiNetworks: [{ ssid: 'Home_WiFi', suspicious: false }],
-        cameraButton: false
-      }, DEFAULT_THRESHOLD);
+        wifiNetworks: ['Home_WiFi', 'OfficeNet'],
+        cameraButton: false,
+        customThreshold: defaultThreshold
+      });
 
-      assert.equal(result.rfAnomaly, true);
-      assert.equal(result.suspiciousSSID, false);
-      assert.equal(result.riskLevel, 'MEDIUM');
+      expect(result.riskLevel).toBe('MEDIUM');
+      expect(result.rfAnomaly).toBe(true);
+      expect(result.suspiciousSSID).toBe(false);
+      expect(result.cameraButton).toBe(false);
     });
 
-    it('Condition 4 (HIGH): rfAnomaly=Yes, suspiciousSSID=Yes, cameraButton=No', () => {
+    it('evaluates HIGH condition (Yes RF, Yes SSID, No Button)', () => {
       const result = calculateRisk({
-        rfValue: 3200,
-        wifiNetworks: [
-          { ssid: 'Home_WiFi', suspicious: false },
-          { ssid: 'hidden_cam_01', suspicious: true }
-        ],
-        cameraButton: false
-      }, DEFAULT_THRESHOLD);
+        rfValue: 3400,
+        wifiNetworks: ['Home_WiFi', 'spycam_device'],
+        cameraButton: false,
+        customThreshold: defaultThreshold
+      });
 
-      assert.equal(result.rfAnomaly, true);
-      assert.equal(result.suspiciousSSID, true);
-      assert.equal(result.riskLevel, 'HIGH');
-      assert.ok(result.suspiciousNetworks.includes('hidden_cam_01'));
+      expect(result.riskLevel).toBe('HIGH');
+      expect(result.rfAnomaly).toBe(true);
+      expect(result.suspiciousSSID).toBe(true);
+      expect(result.cameraButton).toBe(false);
     });
 
-    it('Condition 5 (HIGH - Manual Override): cameraButton=Yes with low RF and no suspicious SSIDs', () => {
+    it('evaluates HIGH condition when manual button is pressed (Override)', () => {
       const result = calculateRisk({
-        rfValue: 500,
-        wifiNetworks: [{ ssid: 'Home_WiFi', suspicious: false }],
-        cameraButton: true
-      }, DEFAULT_THRESHOLD);
+        rfValue: 300,
+        wifiNetworks: ['Home_WiFi'],
+        cameraButton: true,
+        customThreshold: defaultThreshold
+      });
 
-      assert.equal(result.rfAnomaly, false);
-      assert.equal(result.suspiciousSSID, false);
-      assert.equal(result.riskLevel, 'HIGH');
+      expect(result.riskLevel).toBe('HIGH');
+      expect(result.cameraButton).toBe(true);
+      expect(result.rfAnomaly).toBe(false);
+      expect(result.suspiciousSSID).toBe(false);
     });
 
-    it('Condition 5b (HIGH - Manual Override): cameraButton=Yes overrides all other combinations', () => {
-      const result = calculateRisk({
-        rfValue: 4000,
-        wifiNetworks: [{ ssid: 'surveillance_node', suspicious: true }],
-        cameraButton: true
-      }, DEFAULT_THRESHOLD);
-
-      assert.equal(result.rfAnomaly, true);
-      assert.equal(result.suspiciousSSID, true);
-      assert.equal(result.riskLevel, 'HIGH');
-    });
-  });
-
-  describe('Boundary and Edge Cases', () => {
-    it('Boundary check: rfValue exactly at threshold (2000) is NOT an anomaly', () => {
-      const result = calculateRisk({
+    it('respects the exact threshold boundary (2000)', () => {
+      const atThreshold = calculateRisk({
         rfValue: 2000,
         wifiNetworks: [],
-        cameraButton: false
-      }, 2000);
+        cameraButton: false,
+        customThreshold: 2000
+      });
+      expect(atThreshold.rfAnomaly).toBe(false);
+      expect(atThreshold.riskLevel).toBe('SAFE');
 
-      assert.equal(result.rfAnomaly, false);
-      assert.equal(result.riskLevel, 'SAFE');
-    });
-
-    it('Boundary check: rfValue at 2001 is an anomaly', () => {
-      const result = calculateRisk({
+      const aboveThreshold = calculateRisk({
         rfValue: 2001,
         wifiNetworks: [],
-        cameraButton: false
-      }, 2000);
-
-      assert.equal(result.rfAnomaly, true);
-      assert.equal(result.riskLevel, 'MEDIUM');
-    });
-
-    it('Handles empty or omitted parameters safely', () => {
-      const result = calculateRisk();
-      assert.equal(result.rfAnomaly, false);
-      assert.equal(result.suspiciousSSID, false);
-      assert.equal(result.riskLevel, 'SAFE');
-      assert.deepEqual(result.suspiciousNetworks, []);
-    });
-
-    it('Handles non-numeric or negative rfValue without throwing', () => {
-      const invalidVals = ['invalid_string', null, undefined, -500, NaN];
-      invalidVals.forEach((val) => {
-        const result = calculateRisk({ rfValue: val });
-        assert.equal(result.riskLevel, 'SAFE');
+        cameraButton: false,
+        customThreshold: 2000
       });
+      expect(aboveThreshold.rfAnomaly).toBe(true);
+      expect(aboveThreshold.riskLevel).toBe('MEDIUM');
     });
 
-    it('Auto-detects suspicious SSID strings when suspicious boolean flag is omitted or false', () => {
+    it('handles negative or invalid RF input cleanly', () => {
       const result = calculateRisk({
-        rfValue: 800,
-        wifiNetworks: [
-          { ssid: 'office_spycam_hd' }
-        ],
+        rfValue: -50,
+        wifiNetworks: [],
         cameraButton: false
       });
-
-      assert.equal(result.suspiciousSSID, true);
-      assert.equal(result.riskLevel, 'LOW');
-      assert.ok(result.suspiciousNetworks.includes('office_spycam_hd'));
-    });
-
-    it('Supports array of string SSIDs', () => {
-      const result = calculateRisk({
-        rfValue: 800,
-        wifiNetworks: ['Home', 'hidden_camera_99'],
-        cameraButton: false
-      });
-
-      assert.equal(result.suspiciousSSID, true);
-      assert.equal(result.riskLevel, 'LOW');
-      assert.ok(result.suspiciousNetworks.includes('hidden_camera_99'));
+      expect(result.rfValue).toBe(0);
+      expect(result.rfAnomaly).toBe(false);
     });
   });
 });

@@ -1,30 +1,45 @@
-import Telemetry from '../models/Telemetry.js';
+import { Telemetry } from '../models/Telemetry.js';
 import { processTelemetry } from '../services/telemetryService.js';
 
 export async function getTelemetry(req, res, next) {
   try {
-    const { page, limit } = req.pagination;
-    const { deviceId, riskLevel, anomaly } = req.query;
-
-    const filter = {};
-    if (deviceId) filter.deviceId = deviceId;
-    if (riskLevel) filter.riskLevel = riskLevel.toUpperCase();
-    if (anomaly !== undefined) filter.rfAnomaly = anomaly === 'true';
-
+    const page = Math.max(1, parseInt(req.query.page || '1', 10));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
     const skip = (page - 1) * limit;
-    const [telemetry, total] = await Promise.all([
-      Telemetry.find(filter).sort({ receivedAt: -1 }).skip(skip).limit(limit),
-      Telemetry.countDocuments(filter)
+
+    const query = {};
+
+    if (req.query.deviceId) {
+      query.deviceId = req.query.deviceId.trim();
+    }
+
+    if (req.query.riskLevel) {
+      query.riskLevel = req.query.riskLevel.toUpperCase();
+    }
+
+    if (req.query.startDate || req.query.endDate) {
+      query.receivedAt = {};
+      if (req.query.startDate) {
+        query.receivedAt.$gte = new Date(req.query.startDate);
+      }
+      if (req.query.endDate) {
+        query.receivedAt.$lte = new Date(req.query.endDate);
+      }
+    }
+
+    const [records, total] = await Promise.all([
+      Telemetry.find(query).sort({ receivedAt: -1 }).skip(skip).limit(limit),
+      Telemetry.countDocuments(query)
     ]);
 
     res.json({
       success: true,
-      data: telemetry,
+      data: records,
       pagination: {
         page,
         limit,
         total,
-        pages: Math.ceil(total / limit)
+        totalPages: Math.ceil(total / limit)
       }
     });
   } catch (error) {
@@ -32,28 +47,29 @@ export async function getTelemetry(req, res, next) {
   }
 }
 
-export async function getDeviceTelemetry(req, res, next) {
+export async function getTelemetryByDeviceId(req, res, next) {
   try {
-    const { page, limit } = req.pagination;
     const { deviceId } = req.params;
-
-    const filter = { deviceId };
+    const page = Math.max(1, parseInt(req.query.page || '1', 10));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
     const skip = (page - 1) * limit;
 
-    const [telemetry, total] = await Promise.all([
-      Telemetry.find(filter).sort({ receivedAt: -1 }).skip(skip).limit(limit),
-      Telemetry.countDocuments(filter)
+    const query = { deviceId };
+
+    const [records, total] = await Promise.all([
+      Telemetry.find(query).sort({ receivedAt: -1 }).skip(skip).limit(limit),
+      Telemetry.countDocuments(query)
     ]);
 
     res.json({
       success: true,
       deviceId,
-      data: telemetry,
+      data: records,
       pagination: {
         page,
         limit,
         total,
-        pages: Math.ceil(total / limit)
+        totalPages: Math.ceil(total / limit)
       }
     });
   } catch (error) {
@@ -64,10 +80,21 @@ export async function getDeviceTelemetry(req, res, next) {
 export async function createTelemetry(req, res, next) {
   try {
     const result = await processTelemetry(req.body);
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        error: result.error
+      });
+    }
+
     res.status(201).json({
       success: true,
-      message: 'Telemetry ingested and processed successfully',
-      data: result
+      message: 'Telemetry processed successfully',
+      data: {
+        telemetry: result.telemetry,
+        device: result.device,
+        alert: result.alert
+      }
     });
   } catch (error) {
     next(error);
@@ -76,7 +103,6 @@ export async function createTelemetry(req, res, next) {
 
 export default {
   getTelemetry,
-  getDeviceTelemetry,
+  getTelemetryByDeviceId,
   createTelemetry
 };
-

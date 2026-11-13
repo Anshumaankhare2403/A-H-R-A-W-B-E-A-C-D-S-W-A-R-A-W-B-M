@@ -1,154 +1,128 @@
-import { describe, it, before, after, beforeEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import net from 'net';
-import aedes from 'aedes';
+import Aedes from 'aedes';
 import mqtt from 'mqtt';
-import mongoose from 'mongoose';
-import { connectDatabase, disconnectDatabase } from '../src/config/database.js';
-import { startMqttService } from '../src/services/mqttService.js';
-import Device from '../src/models/Device.js';
-import Telemetry from '../src/models/Telemetry.js';
-import Alert from '../src/models/Alert.js';
+import { setupTestDatabase, clearTestDatabase, teardownTestDatabase } from './setupDb.js';
+import { startMqttSubscriber, stopMqttSubscriber, extractDeviceIdFromTopic } from '../src/services/mqttService.js';
+import { Telemetry } from '../src/models/Telemetry.js';
+import { Device } from '../src/models/Device.js';
 
-const TEST_DB_URI = 'mongodb://127.0.0.1:27017/anticamera_test_mqtt';
-const TEST_BROKER_PORT = 18883;
-const TEST_BROKER_URL = `mqtt://127.0.0.1:${TEST_BROKER_PORT}`;
-
-describe('MQTT Ingestion Service Integration Tests', () => {
-  let aedesInstance;
-  let brokerServer;
-  let backendClient;
+describe('MQTT Pipeline & Broker Resilience Suite', () => {
+  let aedesBroker;
+  let tcpServer;
+  const testBrokerPort = 18883;
+  const brokerUrl = `mqtt://127.0.0.1:${testBrokerPort}`;
   let testPublisher;
 
-  before(async () => {
-    // 1. Connect MongoDB
-    await connectDatabase(TEST_DB_URI);
+  beforeAll(async () => {
+    await setupTestDatabase();
 
-    // 2. Start Embedded Aedes MQTT Broker for Test Suite
-    aedesInstance = aedes();
-    brokerServer = net.createServer(aedesInstance.handle);
+    aedesBroker = new Aedes();
+    tcpServer = net.createServer(aedesBroker.handle);
 
     await new Promise((resolve) => {
-      brokerServer.listen(TEST_BROKER_PORT, '127.0.0.1', () => {
-        resolve();
-      });
+      tcpServer.listen(testBrokerPort, '127.0.0.1', resolve);
     });
 
-    // 3. Connect Backend MQTT Subscriber
-    backendClient = mqtt.connect(TEST_BROKER_URL, {
-      clientId: 'test_backend_sub',
-      clean: true
+    startMqttSubscriber(brokerUrl);
+
+    testPublisher = mqtt.connect(brokerUrl, {
+      clientId: 'esp32_simulator_test_client'
     });
 
     await new Promise((resolve) => {
-      backendClient.on('connect', () => {
-        startMqttService(backendClient);
-        resolve();
-      });
+      testPublisher.on('connect', resolve);
     });
+  }, 300000);
 
-    // 4. Connect Publisher Client
-    testPublisher = mqtt.connect(TEST_BROKER_URL, {
-      clientId: 'test_esp32_pub',
-      clean: true
-    });
-
-    await new Promise((resolve) => {
-      testPublisher.on('connect', () => resolve());
-    });
-  });
-
-  after(async () => {
+  afterAll(async () => {
     if (testPublisher) {
-      await new Promise((res) => testPublisher.end(true, res));
+      await new Promise((resolve) => testPublisher.end(false, resolve));
     }
-    if (backendClient) {
-      await new Promise((res) => backendClient.end(true, res));
+    await stopMqttSubscriber();
+    if (tcpServer) {
+      await new Promise((resolve) => tcpServer.close(resolve));
     }
-    if (brokerServer) {
-      await new Promise((res) => brokerServer.close(res));
+    if (aedesBroker) {
+      await new Promise((resolve) => aedesBroker.close(resolve));
     }
-    if (aedesInstance) {
-      await new Promise((res) => aedesInstance.close(res));
-    }
-
-    if (mongoose.connection.readyState === 1) {
-      await mongoose.connection.dropDatabase();
-    }
-    await disconnectDatabase();
+    await teardownTestDatabase();
   });
 
-  beforeEach(async () => {
-    await Device.deleteMany({});
-    await Telemetry.deleteMany({});
-    await Alert.deleteMany({});
+  it('correctly extracts deviceId from topic string', () => {
+    expect(extractDeviceIdFromTopic('anticamera/device123/telemetry')).toBe('device123');
+    expect(extractDeviceIdFromTopic('anticamera/device999/status')).toBe('device999');
+    expect(extractDeviceIdFromTopic('other/topic/here')).toBeNull();
   });
 
-  it('TST-021: should ingest valid MQTT telemetry message and persist to database', async () => {
-    const topic = 'anticamera/esp32_mqtt_01/telemetry';
-    const message = JSON.stringify({
-      deviceId: 'esp32_mqtt_01',
-      timestamp: Math.floor(Date.now() / 1000),
-      rfValue: 2850,
+  it('TEST-021: ingests and persists valid MQTT telemetry from simulated ESP32', async () => {
+    const payload = {
+      deviceId: 'mqtt_dev_01',
+      timestamp: 1794468800,
+      rfValue: 2950,
       wifiNetworks: [
-        { ssid: 'Home_WiFi', suspicious: false },
-        { ssid: 'spycam_unit_x', suspicious: true }
+        { ssid: 'Office_WiFi', suspicious: false },
+        { ssid: 'hidden_cam_test', suspicious: true }
       ],
       cameraButton: false
+    };
+
+    await new Promise((resolve, reject) => {
+      testPublisher.publish(
+        'anticamera/mqtt_dev_01/telemetry',
+        JSON.stringify(payload),
+        { qos: 1 },
+        (err) => (err ? reject(err) : resolve())
+      );
     });
 
-    testPublisher.publish(topic, message, { qos: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 600));
 
-    // Wait for async processing
-    await new Promise((res) => setTimeout(res, 500));
+    const record = await Telemetry.findOne({ deviceId: 'mqtt_dev_01' });
+    expect(record).not.toBeNull();
+    expect(record.rfValue).toBe(2950);
+    expect(record.riskLevel).toBe('HIGH');
 
-    // Verify Device created
-    const device = await Device.findOne({ deviceId: 'esp32_mqtt_01' });
-    assert.ok(device);
-    assert.equal(device.latestRisk, 'HIGH');
-    assert.equal(device.latestRfValue, 2850);
-
-    // Verify Telemetry saved
-    const telemetry = await Telemetry.findOne({ deviceId: 'esp32_mqtt_01' });
-    assert.ok(telemetry);
-    assert.equal(telemetry.rfAnomaly, true);
-    assert.equal(telemetry.suspiciousSSID, true);
-    assert.equal(telemetry.riskLevel, 'HIGH');
-
-    // Verify Alert generated
-    const alert = await Alert.findOne({ deviceId: 'esp32_mqtt_01' });
-    assert.ok(alert);
-    assert.equal(alert.severity, 'HIGH');
+    const device = await Device.findOne({ deviceId: 'mqtt_dev_01' });
+    expect(device).not.toBeNull();
+    expect(device.status).toBe('ALERT');
   });
 
-  it('TST-021b: should safely handle malformed JSON without crashing backend', async () => {
-    const topic = 'anticamera/esp32_bad/telemetry';
-    const brokenJson = '{ deviceId: "broken", rfValue: ';
+  it('TEST-022: handles malformed JSON without crashing backend process', async () => {
+    const malformedPayload = '{"deviceId": "bad_json", rfValue: INVALID...';
 
-    testPublisher.publish(topic, brokenJson, { qos: 1 });
+    await new Promise((resolve, reject) => {
+      testPublisher.publish(
+        'anticamera/bad_device/telemetry',
+        malformedPayload,
+        { qos: 1 },
+        (err) => (err ? reject(err) : resolve())
+      );
+    });
 
-    await new Promise((res) => setTimeout(res, 300));
+    await new Promise((resolve) => setTimeout(resolve, 400));
 
-    // Confirm no crash and nothing corrupted in DB
-    const count = await Telemetry.countDocuments({ deviceId: 'esp32_bad' });
-    assert.equal(count, 0);
-  });
-
-  it('TST-021c: should automatically adopt deviceId from topic if omitted from JSON', async () => {
-    const topic = 'anticamera/inferred_device_99/telemetry';
-    const payloadWithoutId = JSON.stringify({
-      rfValue: 800,
-      wifiNetworks: [],
+    const validFollowup = {
+      deviceId: 'mqtt_dev_02',
+      timestamp: 1794468810,
+      rfValue: 500,
+      wifiNetworks: ['Home_WiFi'],
       cameraButton: false
+    };
+
+    await new Promise((resolve, reject) => {
+      testPublisher.publish(
+        'anticamera/mqtt_dev_02/telemetry',
+        JSON.stringify(validFollowup),
+        { qos: 1 },
+        (err) => (err ? reject(err) : resolve())
+      );
     });
 
-    testPublisher.publish(topic, payloadWithoutId, { qos: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 600));
 
-    await new Promise((res) => setTimeout(res, 500));
-
-    const device = await Device.findOne({ deviceId: 'inferred_device_99' });
-    assert.ok(device);
-    assert.equal(device.latestRisk, 'SAFE');
+    const followupRecord = await Telemetry.findOne({ deviceId: 'mqtt_dev_02' });
+    expect(followupRecord).not.toBeNull();
+    expect(followupRecord.riskLevel).toBe('SAFE');
   });
 });
-

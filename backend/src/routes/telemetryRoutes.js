@@ -1,12 +1,14 @@
-import express from 'express';
-import { getTelemetry, getDeviceTelemetry, createTelemetry } from '../controllers/telemetryController.js';
-import { validatePagination, validateTelemetryBody } from '../middleware/validation.js';
+import { Router } from 'express';
+import {
+  getTelemetry,
+  getTelemetryByDeviceId,
+  createTelemetry
+} from '../controllers/telemetryController.js';
 
-const router = express.Router();
+const router = Router();
 
-router.get('/', validatePagination, getTelemetry);
-router.get('/:deviceId', validatePagination, getDeviceTelemetry);
-router.post('/', validateTelemetryBody, createTelemetry);
+router.get('/', getTelemetry);
+router.post('/', createTelemetry);
+router.get('/:deviceId', getTelemetryByDeviceId);
 
 export default router;
-

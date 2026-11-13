@@ -1,57 +1,31 @@
-"""
-Hybrid RF and Wi-Fi Based Embedded Anti-Camera Detection System
-Firmware for ESP32 (MicroPython) - Wokwi Simulation & Hardware Prototype
-
-Preserved Pin Configuration:
-- RF Sensor (Potentiometer): GPIO 34 (ADC1_CH6)
-- Red LED: GPIO 25
-- Yellow LED: GPIO 26
-- Green LED: GPIO 27
-- Buzzer: GPIO 14
-- Camera Detection Button: GPIO 33 (Internal Pull-Up)
-- OLED I2C SDA: GPIO 21
-- OLED I2C SCL: GPIO 22
-"""
-
-import machine
-from machine import Pin, ADC, I2C
 import time
-from time import sleep
-import ujson
+import json
 import network
+from machine import Pin, ADC, PWM, I2C
 
-# Try importing umqtt.simple
-try:
-    from umqtt.simple import MQTTClient
-except ImportError:
-    try:
-        from simple import MQTTClient
-    except ImportError:
-        print("[Firmware] Warning: umqtt.simple not found. Running in offline telemetry mode.")
-        MQTTClient = None
-
-# Import SSD1306 OLED driver
 try:
     import ssd1306
+    HAS_OLED_DRIVER = True
 except ImportError:
-    print("[Firmware] Warning: ssd1306 driver not found.")
-    ssd1306 = None
+    HAS_OLED_DRIVER = False
 
-# --------------------------------
-# Configuration & Constants
-# --------------------------------
-DEVICE_ID = "esp32_dev01"
+try:
+    from umqtt.simple import MQTTClient
+    HAS_UMQTT = True
+except ImportError:
+    HAS_UMQTT = False
+
+DEVICE_ID = "device001"
 WIFI_SSID = "Wokwi-GUEST"
-WIFI_PASS = ""
+WIFI_PASSWORD = ""
 
-# Wokwi Private IoT Gateway directs host.wokwi.internal to local computer
 MQTT_BROKER = "host.wokwi.internal"
 MQTT_PORT = 1883
-MQTT_TOPIC_TELEMETRY = f"anticamera/{DEVICE_ID}/telemetry"
-MQTT_TOPIC_STATUS = f"anticamera/{DEVICE_ID}/status"
-MQTT_TOPIC_COMMANDS = f"anticamera/{DEVICE_ID}/commands"
+MQTT_TELEMETRY_TOPIC = f"anticamera/{DEVICE_ID}/telemetry"
+MQTT_STATUS_TOPIC = f"anticamera/{DEVICE_ID}/status"
 
 RF_THRESHOLD = 2000
+TELEMETRY_INTERVAL_MS = 5000
 
 SUSPICIOUS_KEYWORDS = [
     "spycam",
@@ -68,247 +42,292 @@ MOCK_WIFI_NETWORKS = [
     "GuestWiFi"
 ]
 
-# --------------------------------
-# Hardware Initialization
-# --------------------------------
-# 1. RF Sensor Simulator (Potentiometer on GPIO 34)
-rf_sensor = ADC(Pin(34))
-rf_sensor.atten(ADC.ATTN_11DB)
+rf_adc = ADC(Pin(34))
+rf_adc.atten(ADC.ATTN_11DB)
 
-# 2. Status LEDs
-red_led = Pin(25, Pin.OUT)
-yellow_led = Pin(26, Pin.OUT)
-green_led = Pin(27, Pin.OUT)
+led_red = Pin(25, Pin.OUT)
+led_yellow = Pin(26, Pin.OUT)
+led_green = Pin(27, Pin.OUT)
 
-# 3. Warning Buzzer
-buzzer = Pin(14, Pin.OUT)
+buzzer_pin = Pin(14, Pin.OUT)
+buzzer_pwm = None
+try:
+    buzzer_pwm = PWM(buzzer_pin)
+    buzzer_pwm.duty(0)
+except Exception:
+    buzzer_pwm = None
 
-# 4. Manual Hidden Camera Button (Active LOW with internal pull-up)
-camera_button = Pin(33, Pin.IN, Pin.PULL_UP)
+button_pin = Pin(33, Pin.IN, Pin.PULL_UP)
 
-# 5. SSD1306 I2C OLED Display
 oled = None
 try:
-    i2c = I2C(0, scl=Pin(22), sda=Pin(21))
-    if ssd1306:
+    i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=400000)
+    if HAS_OLED_DRIVER:
         oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+        print("[Hardware] OLED Display initialized (128x64)")
+    else:
+        print("[Hardware] ssd1306 driver not found. Display disabled.")
 except Exception as e:
-    print(f"[Firmware] OLED Init Error: {e}")
+    print(f"[Hardware] OLED initialization failed: {e}")
 
-# --------------------------------
-# Hardware Control Helpers
-# --------------------------------
-def reset_outputs():
-    red_led.off()
-    yellow_led.off()
-    green_led.off()
-    buzzer.off()
+def set_leds(red, yellow, green):
+    led_red.value(1 if red else 0)
+    led_yellow.value(1 if yellow else 0)
+    led_green.value(1 if green else 0)
 
-def update_oled(rf_val, status_text, mqtt_ok=False):
+def set_buzzer(active):
+    try:
+        if buzzer_pwm:
+            if active:
+                buzzer_pwm.freq(2000)
+                buzzer_pwm.duty(512)
+            else:
+                buzzer_pwm.duty(0)
+        else:
+            buzzer_pin.value(1 if active else 0)
+    except Exception as e:
+        print(f"[Buzzer] Error: {e}")
+
+def update_oled(rf_val, risk_level, suspicious_count, btn_pressed, mqtt_connected):
     if not oled:
         return
     try:
         oled.fill(0)
-        oled.text("ANTI-CAM DETECT", 5, 0)
-        oled.text(f"RF: {rf_val}", 0, 16)
-        
-        status_sub = "NET: OK" if mqtt_ok else "NET: DISC"
-        oled.text(status_sub, 64, 16)
+        oled.text("ANTI-CAM DETECT", 4, 0)
+        oled.hline(0, 10, 128, 1)
 
-        oled.text("STATUS:", 0, 36)
-        oled.text(status_text, 0, 48)
+        oled.text(f"RF Raw: {rf_val}", 0, 14)
+        oled.text(f"Risk: {risk_level}", 0, 26)
+        oled.text(f"SSIDs: {suspicious_count} Flagged", 0, 38)
+
+        btn_str = "PRESSED" if btn_pressed else "IDLE"
+        oled.text(f"Button: {btn_str}", 0, 48)
+
+        mqtt_str = "MQTT: OK" if mqtt_connected else "MQTT: DISC"
+        oled.text(mqtt_str, 0, 56)
+
         oled.show()
     except Exception as e:
-        print(f"[Firmware] OLED display error: {e}")
+        print(f"[OLED] Update failed: {e}")
 
-# --------------------------------
-# Wi-Fi & MQTT Networking
-# --------------------------------
+def read_rf_sensor():
+    return rf_adc.read()
+
+def is_button_pressed():
+    return button_pin.value() == 0
+
+def analyze_mock_ssids():
+    annotated = []
+    suspicious_count = 0
+
+    for ssid in MOCK_WIFI_NETWORKS:
+        lower_ssid = ssid.lower()
+        is_suspicious = any(kw in lower_ssid for kw in SUSPICIOUS_KEYWORDS)
+        if is_suspicious:
+            suspicious_count += 1
+        annotated.append({"ssid": ssid, "suspicious": is_suspicious})
+
+    return annotated, suspicious_count
+
+def calculate_local_risk(rf_value, suspicious_count, button_pressed):
+    rf_anomaly = rf_value > RF_THRESHOLD
+    has_suspicious_ssid = suspicious_count > 0
+
+    if button_pressed:
+        return "HIGH", True
+    elif rf_anomaly and has_suspicious_ssid:
+        return "HIGH", True
+    elif rf_anomaly and not has_suspicious_ssid:
+        return "MEDIUM", True
+    elif not rf_anomaly and has_suspicious_ssid:
+        return "LOW", False
+    else:
+        return "SAFE", False
+
+def apply_hardware_feedback(risk_level):
+    if risk_level == "HIGH":
+        set_leds(red=True, yellow=False, green=False)
+        set_buzzer(True)
+    elif risk_level == "MEDIUM":
+        set_leds(red=False, yellow=True, green=False)
+        set_buzzer(False)
+    elif risk_level == "LOW":
+        set_leds(red=False, yellow=True, green=True)
+        set_buzzer(False)
+    else:
+        set_leds(red=False, yellow=False, green=True)
+        set_buzzer(False)
+
 wlan = network.WLAN(network.STA_IF)
-mqtt_client = None
 
 def connect_wifi():
-    wlan.active(True)
     if not wlan.isconnected():
         print(f"[Wi-Fi] Connecting to {WIFI_SSID}...")
-        wlan.connect(WIFI_SSID, WIFI_PASS)
-        attempts = 0
-        while not wlan.isconnected() and attempts < 20:
-            sleep(0.5)
-            attempts += 1
+        wlan.active(True)
+        wlan.connect(WIFI_SSID, WIFI_PASSWORD)
+        retries = 0
+        while not wlan.isconnected() and retries < 15:
+            time.sleep(0.5)
+            retries += 1
             print(".", end="")
-        print("")
+        print()
 
     if wlan.isconnected():
         print(f"[Wi-Fi] Connected! IP: {wlan.ifconfig()[0]}")
         return True
     else:
-        print("[Wi-Fi] Connection failed or timed out.")
+        print("[Wi-Fi] Connection timed out.")
         return False
 
-def on_command_received(topic, msg):
-    print(f"[MQTT] Command received on {topic.decode()}: {msg.decode()}")
-    try:
-        cmd = ujson.loads(msg.decode())
-        action = cmd.get("action")
-        if action == "beep":
-            buzzer.on()
-            sleep(0.5)
-            buzzer.off()
-    except Exception as e:
-        print(f"[MQTT] Failed to parse command: {e}")
+class MinimalMqttClient:
+    def __init__(self, client_id, server, port=1883):
+        self.client_id = client_id
+        self.server = server
+        self.port = port
+        self.sock = None
+
+    def connect(self):
+        import usocket
+        print(f"[MQTT-Fallback] Opening raw socket to {self.server}:{self.port}...")
+        addr = usocket.getaddrinfo(self.server, self.port)[0][-1]
+        self.sock = usocket.socket()
+        self.sock.settimeout(10.0)
+        self.sock.connect(addr)
+
+        client_bytes = self.client_id.encode('utf-8')
+        var_header = b"\x00\x04MQTT\x04\x02\x00\x3c"
+        payload = bytearray([0, len(client_bytes)]) + client_bytes
+        remaining_len = len(var_header) + len(payload)
+        packet = bytearray([0x10, remaining_len]) + var_header + payload
+
+        self.sock.send(packet)
+        ack = self.sock.recv(4)
+        if len(ack) >= 4 and ack[0] == 0x20 and ack[3] == 0x00:
+            print("[MQTT-Fallback] Connected successfully!")
+            return True
+        raise OSError("MQTT CONNACK rejected")
+
+    def publish(self, topic, msg):
+        topic_bytes = topic.encode('utf-8')
+        msg_bytes = msg.encode('utf-8')
+        var_header = bytearray([0, len(topic_bytes)]) + topic_bytes
+        remaining_len = len(var_header) + len(msg_bytes)
+        packet = bytearray([0x30, remaining_len]) + var_header + msg_bytes
+        self.sock.send(packet)
+
+    def disconnect(self):
+        if self.sock:
+            try:
+                self.sock.send(b"\xe0\x00")
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
+
+mqtt_client = None
+
+def get_mqtt_client():
+    global mqtt_client
+    if HAS_UMQTT:
+        return MQTTClient(DEVICE_ID, MQTT_BROKER, port=MQTT_PORT, keepalive=60)
+    else:
+        return MinimalMqttClient(DEVICE_ID, MQTT_BROKER, port=MQTT_PORT)
 
 def connect_mqtt():
     global mqtt_client
-    if not MQTTClient:
-        return False
-
     try:
-        print(f"[MQTT] Connecting to broker at {MQTT_BROKER}:{MQTT_PORT}...")
-        mqtt_client = MQTTClient(
-            client_id=DEVICE_ID,
-            server=MQTT_BROKER,
-            port=MQTT_PORT,
-            keepalive=60
-        )
-        mqtt_client.set_callback(on_command_received)
+        print(f"[MQTT] Connecting to broker {MQTT_BROKER}:{MQTT_PORT}...")
+        mqtt_client = get_mqtt_client()
         mqtt_client.connect()
-        mqtt_client.subscribe(MQTT_TOPIC_COMMANDS)
-        
-        # Publish initial status
-        status_payload = ujson.dumps({
-            "deviceId": DEVICE_ID,
-            "status": "online",
-            "firmware": "1.0.0-micropython"
-        })
-        mqtt_client.publish(MQTT_TOPIC_STATUS, status_payload)
-        print("[MQTT] Successfully connected and subscribed!")
+        print("[MQTT] Successfully connected to broker!")
+
+        status_payload = json.dumps({"deviceId": DEVICE_ID, "status": "ONLINE", "firmware": "1.0.0"})
+        mqtt_client.publish(MQTT_STATUS_TOPIC, status_payload)
         return True
     except Exception as e:
-        print(f"[MQTT] Connection failed ({MQTT_BROKER}): {e}")
+        print(f"[MQTT] Connection failed: {e}")
         mqtt_client = None
         return False
 
-# --------------------------------
-# Wi-Fi Scan & Suspicious Keywords
-# --------------------------------
-def evaluate_wifi_networks():
-    classified_networks = []
-    suspicious_found = False
-
-    for ssid in MOCK_WIFI_NETWORKS:
-        is_susp = any(kw in ssid.lower() for kw in SUSPICIOUS_KEYWORDS)
-        if is_susp:
-            suspicious_found = True
-        classified_networks.append({
-            "ssid": ssid,
-            "suspicious": is_susp
-        })
-
-    return classified_networks, suspicious_found
-
-# --------------------------------
-# Main Telemetry Loop
-# --------------------------------
 def main():
-    print("====================================================")
-    print(" Hybrid Anti-Camera Detection System Starting...    ")
-    print("====================================================")
+    print("==================================================")
+    print("  HYBRID ANTI-CAMERA DETECTION SYSTEM - ESP32     ")
+    print(f"  Device ID: {DEVICE_ID} | Firmware v1.0.0       ")
+    print("==================================================")
 
-    # Initial Wi-Fi & MQTT setup
-    wifi_connected = connect_wifi()
-    mqtt_connected = False
-    if wifi_connected:
-        mqtt_connected = connect_mqtt()
+    set_leds(red=True, yellow=True, green=True)
+    time.sleep(0.5)
+    set_leds(red=False, yellow=False, green=False)
 
-    reconnect_timer = 0
+    connect_wifi()
+    mqtt_ok = connect_mqtt()
+
+    last_telemetry_time = 0
 
     while True:
         try:
-            # 1. Read RF analog signal
-            rf_val = rf_sensor.read()
+            rf_val = read_rf_sensor()
+            btn_pressed = is_button_pressed()
+            wifi_networks, suspicious_count = analyze_mock_ssids()
 
-            # 2. Read manual button (Active LOW, pressed == 0)
-            camera_detected_btn = (camera_button.value() == 0)
+            risk_level, rf_anomaly = calculate_local_risk(rf_val, suspicious_count, btn_pressed)
 
-            # 3. Evaluate Wi-Fi SSIDs
-            networks, suspicious_ssid = evaluate_wifi_networks()
-            rf_anomaly = rf_val > RF_THRESHOLD
+            apply_hardware_feedback(risk_level)
 
-            # 4. Local Risk Calculation (Consistent with Backend Risk Engine)
-            status_text = "SAFE"
-            if camera_detected_btn:
-                status_text = "CAM DETECTED"
-                local_risk = "HIGH"
-            elif rf_anomaly and suspicious_ssid:
-                status_text = "HIGH RISK"
-                local_risk = "HIGH"
-            elif rf_anomaly:
-                status_text = "MEDIUM RISK"
-                local_risk = "MEDIUM"
-            elif suspicious_ssid:
-                status_text = "LOW RISK"
-                local_risk = "LOW"
-            else:
-                status_text = "SAFE"
-                local_risk = "SAFE"
-
-            # 5. Actuate LEDs & Buzzer
-            reset_outputs()
-            if local_risk == "HIGH":
-                red_led.on()
-                buzzer.on()
-                sleep(0.3)
-                buzzer.off()
-            elif local_risk == "MEDIUM":
-                yellow_led.on()
-            elif local_risk == "LOW":
-                green_led.on()
-            else:
-                green_led.on()
-
-            # 6. Update OLED Display
-            update_oled(rf_val, status_text, mqtt_connected)
-
-            # 7. Print to Serial Monitor
-            print(f"\n[Telemetry] RF: {rf_val} (Anomaly: {rf_anomaly}) | Suspicious SSID: {suspicious_ssid} | Button: {camera_detected_btn}")
-            print(f"[Telemetry] Status: {status_text} | Local Risk: {local_risk}")
-
-            # 8. Manage Reconnection if Disconnected
             if not wlan.isconnected():
-                wifi_connected = connect_wifi()
-            if wlan.isconnected() and not mqtt_connected:
-                reconnect_timer += 1
-                if reconnect_timer >= 2:  # retry every ~10s
-                    mqtt_connected = connect_mqtt()
-                    reconnect_timer = 0
+                print("[Network] Wi-Fi connection lost. Reconnecting...")
+                connect_wifi()
 
-            # 9. Publish MQTT Telemetry if Connected
-            if mqtt_connected and mqtt_client:
-                try:
-                    telemetry_data = {
-                        "deviceId": DEVICE_ID,
-                        "timestamp": int(time.time()),
-                        "rfValue": rf_val,
-                        "wifiNetworks": networks,
-                        "cameraButton": camera_detected_btn
-                    }
-                    payload = ujson.dumps(telemetry_data)
-                    mqtt_client.publish(MQTT_TOPIC_TELEMETRY, payload)
-                    print(f"[MQTT] Published to {MQTT_TOPIC_TELEMETRY}: {payload}")
-                    
-                    # Check for incoming commands
-                    mqtt_client.check_msg()
-                except Exception as pub_err:
-                    print(f"[MQTT] Publish error: {pub_err}")
-                    mqtt_connected = False
-            else:
-                print("[MQTT] Broker offline or not reachable. Telemetry held in local memory.")
+            current_time = time.ticks_ms()
+            if time.ticks_diff(current_time, last_telemetry_time) >= TELEMETRY_INTERVAL_MS:
+                last_telemetry_time = current_time
+
+                telemetry_data = {
+                    "deviceId": DEVICE_ID,
+                    "timestamp": time.time(),
+                    "rfValue": rf_val,
+                    "wifiNetworks": wifi_networks,
+                    "cameraButton": btn_pressed
+                }
+                payload_str = json.dumps(telemetry_data)
+
+                published = False
+                if mqtt_client:
+                    try:
+                        mqtt_client.publish(MQTT_TELEMETRY_TOPIC, payload_str)
+                        published = True
+                        mqtt_ok = True
+                    except Exception as pub_err:
+                        print(f"[MQTT] Publish failed: {pub_err}")
+                        mqtt_ok = False
+                        mqtt_client = None
+
+                if not published and wlan.isconnected():
+                    print("[MQTT] Reconnecting to broker...")
+                    mqtt_ok = connect_mqtt()
+                    if mqtt_ok:
+                        try:
+                            mqtt_client.publish(MQTT_TELEMETRY_TOPIC, payload_str)
+                            published = True
+                        except Exception:
+                            pass
+
+                print("\n--- [TELEMETRY REPORT] ---")
+                print(f"Timestamp   : {telemetry_data['timestamp']}")
+                print(f"RF Value    : {rf_val} (Anomaly: {rf_anomaly})")
+                print(f"Button Alert: {btn_pressed}")
+                print(f"Risk Level  : {risk_level} (Local Evaluation)")
+                print(f"Networks    : {len(wifi_networks)} scanned, {suspicious_count} suspicious")
+                print(f"MQTT Status : {'Published (OK)' if published else 'Failed / Queued'}")
+                print("--------------------------")
+
+            update_oled(rf_val, risk_level, suspicious_count, btn_pressed, mqtt_ok)
+
+            time.sleep(0.1)
 
         except Exception as loop_err:
-            print(f"[Firmware Error] Exception in main loop: {loop_err}")
-
-        sleep(5)
+            print(f"[Main Loop Error] {loop_err}")
+            time.sleep(1.0)
 
 if __name__ == "__main__":
     main()

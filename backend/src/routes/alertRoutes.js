@@ -1,11 +1,12 @@
-import express from 'express';
-import { getAlerts, acknowledgeAlert } from '../controllers/alertController.js';
-import { validatePagination } from '../middleware/validation.js';
+import { Router } from 'express';
+import {
+  getAlerts,
+  acknowledgeAlert
+} from '../controllers/alertController.js';
 
-const router = express.Router();
+const router = Router();
 
-router.get('/', validatePagination, getAlerts);
+router.get('/', getAlerts);
 router.patch('/:id/acknowledge', acknowledgeAlert);
 
 export default router;
-

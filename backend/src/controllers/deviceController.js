@@ -1,19 +1,23 @@
-import Device from '../models/Device.js';
-import Telemetry from '../models/Telemetry.js';
+import { Device } from '../models/Device.js';
+import { Telemetry } from '../models/Telemetry.js';
 
 export async function getDevices(req, res, next) {
   try {
-    const { page, limit } = req.pagination;
-    const { status, risk } = req.query;
-
-    const filter = {};
-    if (status) filter.status = status;
-    if (risk) filter.latestRisk = risk.toUpperCase();
-
+    const page = Math.max(1, parseInt(req.query.page || '1', 10));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
     const skip = (page - 1) * limit;
+
+    const query = {};
+    if (req.query.status) {
+      query.status = req.query.status.toUpperCase();
+    }
+    if (req.query.risk) {
+      query.latestRisk = req.query.risk.toUpperCase();
+    }
+
     const [devices, total] = await Promise.all([
-      Device.find(filter).sort({ lastSeen: -1 }).skip(skip).limit(limit),
-      Device.countDocuments(filter)
+      Device.find(query).sort({ lastSeen: -1 }).skip(skip).limit(limit),
+      Device.countDocuments(query)
     ]);
 
     res.json({
@@ -23,7 +27,7 @@ export async function getDevices(req, res, next) {
         page,
         limit,
         total,
-        pages: Math.ceil(total / limit)
+        totalPages: Math.ceil(total / limit)
       }
     });
   } catch (error) {
@@ -39,10 +43,7 @@ export async function getDeviceById(req, res, next) {
     if (!device) {
       return res.status(404).json({
         success: false,
-        error: {
-          message: `Device with ID "${deviceId}" not found`,
-          statusCode: 404
-        }
+        error: `Device with ID "${deviceId}" not found`
       });
     }
 
@@ -55,24 +56,26 @@ export async function getDeviceById(req, res, next) {
   }
 }
 
-export async function getDeviceLatestTelemetry(req, res, next) {
+export async function getLatestDeviceTelemetry(req, res, next) {
   try {
     const { deviceId } = req.params;
-    const latest = await Telemetry.findOne({ deviceId }).sort({ receivedAt: -1 });
 
-    if (!latest) {
+    const device = await Device.findOne({ deviceId });
+    if (!device) {
       return res.status(404).json({
         success: false,
-        error: {
-          message: `No telemetry found for device "${deviceId}"`,
-          statusCode: 404
-        }
+        error: `Device with ID "${deviceId}" not found`
       });
     }
 
+    const latestTelemetry = await Telemetry.findOne({ deviceId }).sort({ receivedAt: -1 });
+
     res.json({
       success: true,
-      data: latest
+      data: {
+        device,
+        latestTelemetry: latestTelemetry || null
+      }
     });
   } catch (error) {
     next(error);
@@ -82,6 +85,5 @@ export async function getDeviceLatestTelemetry(req, res, next) {
 export default {
   getDevices,
   getDeviceById,
-  getDeviceLatestTelemetry
+  getLatestDeviceTelemetry
 };
-

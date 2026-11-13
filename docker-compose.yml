@@ -1,18 +1,25 @@
 services:
   mongodb:
     image: mongo:7.0
-    container_name: anticamera_mongodb
+    container_name: anticamera-mongodb
     restart: unless-stopped
     ports:
       - "27017:27017"
     environment:
-      - MONGO_INITDB_DATABASE=anticamera_db
+      MONGO_INITDB_DATABASE: anticamera_db
     volumes:
-      - mongodb_data:/data/db
+      - mongo_data:/data/db
+    networks:
+      - anticamera-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   mosquitto:
     image: eclipse-mosquitto:2.0
-    container_name: anticamera_mosquitto
+    container_name: anticamera-mosquitto
     restart: unless-stopped
     ports:
       - "1883:1883"
@@ -20,11 +27,23 @@ services:
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - mosquitto_data:/mosquitto/data
-      - ./mosquitto/log:/mosquitto/log
+      - mosquitto_log:/mosquitto/log
+    networks:
+      - anticamera-net
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/#' -C 1 -i healthcheck -u '' || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
-  mongodb_data:
+  mongo_data:
     driver: local
   mosquitto_data:
     driver: local
+  mosquitto_log:
+    driver: local
 
+networks:
+  anticamera-net:
+    driver: bridge

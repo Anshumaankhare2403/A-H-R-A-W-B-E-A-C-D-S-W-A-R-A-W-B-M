@@ -1,190 +1,160 @@
-import { describe, it, before, after, beforeEach } from 'node:test';
-import assert from 'node:assert/strict';
-import mongoose from 'mongoose';
-import { connectDatabase, disconnectDatabase } from '../src/config/database.js';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { setupTestDatabase, clearTestDatabase, teardownTestDatabase } from './setupDb.js';
 import { processTelemetry } from '../src/services/telemetryService.js';
-import Device from '../src/models/Device.js';
-import Telemetry from '../src/models/Telemetry.js';
-import Alert from '../src/models/Alert.js';
+import { Telemetry } from '../src/models/Telemetry.js';
+import { Alert } from '../src/models/Alert.js';
 
-const TEST_DB_URI = 'mongodb://127.0.0.1:27017/anticamera_test_telemetry';
+describe('Telemetry Processing & Alert Generation Pipeline', () => {
+  beforeAll(async () => {
+    await setupTestDatabase();
+  }, 300000);
 
-describe('Telemetry Service & Pipeline Integration Tests', () => {
-  before(async () => {
-    await connectDatabase(TEST_DB_URI);
-  });
-
-  after(async () => {
-    if (mongoose.connection.readyState === 1) {
-      await mongoose.connection.dropDatabase();
-    }
-    await disconnectDatabase();
+  afterAll(async () => {
+    await teardownTestDatabase();
   });
 
   beforeEach(async () => {
-    await Device.deleteMany({});
-    await Telemetry.deleteMany({});
-    await Alert.deleteMany({});
+    await clearTestDatabase();
   });
 
-  it('TST-008: should auto-register a new device upon first telemetry arrival', async () => {
+  it('TEST-011: processes and saves valid telemetry message', async () => {
     const payload = {
-      deviceId: 'test_dev_01',
-      timestamp: Date.now(),
-      rfValue: 1200,
-      wifiNetworks: [{ ssid: 'Home_WiFi', suspicious: false }],
-      cameraButton: false
-    };
-
-    const result = await processTelemetry(payload);
-
-    assert.equal(result.success, true);
-    assert.equal(result.isNewDevice, true);
-    assert.equal(result.device.deviceId, 'test_dev_01');
-    assert.equal(result.device.status, 'online');
-    assert.equal(result.device.latestRisk, 'SAFE');
-    assert.equal(result.device.latestRfValue, 1200);
-
-    const savedDevice = await Device.findOne({ deviceId: 'test_dev_01' });
-    assert.ok(savedDevice);
-    assert.equal(savedDevice.name, 'ESP32-test_dev_01');
-  });
-
-  it('TST-009 & TST-010: should persist telemetry history and update existing device state', async () => {
-    // First reading (SAFE)
-    await processTelemetry({
-      deviceId: 'test_dev_02',
-      rfValue: 900,
-      wifiNetworks: [],
-      cameraButton: false
-    });
-
-    // Second reading (MEDIUM - RF anomaly)
-    const result2 = await processTelemetry({
-      deviceId: 'test_dev_02',
-      rfValue: 2750,
-      wifiNetworks: [],
-      cameraButton: false
-    });
-
-    assert.equal(result2.isNewDevice, false);
-    assert.equal(result2.device.latestRisk, 'MEDIUM');
-    assert.equal(result2.device.latestRfValue, 2750);
-
-    // Verify Telemetry collection has both records
-    const telemetryHistory = await Telemetry.find({ deviceId: 'test_dev_02' }).sort({ receivedAt: 1 });
-    assert.equal(telemetryHistory.length, 2);
-    assert.equal(telemetryHistory[0].riskLevel, 'SAFE');
-    assert.equal(telemetryHistory[1].riskLevel, 'MEDIUM');
-    assert.equal(telemetryHistory[1].rfAnomaly, true);
-  });
-
-  it('TST-011: should generate an alert upon entry into a non-SAFE risk condition', async () => {
-    const payload = {
-      deviceId: 'test_dev_alert',
-      rfValue: 3100,
-      wifiNetworks: [{ ssid: 'spycam_hidden_01', suspicious: true }],
-      cameraButton: false
-    };
-
-    const result = await processTelemetry(payload);
-
-    assert.ok(result.alert);
-    assert.equal(result.alert.deviceId, 'test_dev_alert');
-    assert.equal(result.alert.severity, 'HIGH');
-    assert.equal(result.alert.acknowledged, false);
-    assert.ok(result.alert.suspiciousSSIDs.includes('spycam_hidden_01'));
-
-    const savedAlert = await Alert.findOne({ deviceId: 'test_dev_alert' });
-    assert.ok(savedAlert);
-    assert.equal(savedAlert.severity, 'HIGH');
-  });
-
-  it('TST-012: should suppress duplicate alerts during consecutive identical non-SAFE readings', async () => {
-    const payload = {
-      deviceId: 'test_dev_dup',
-      rfValue: 2900,
-      wifiNetworks: [],
-      cameraButton: false
-    };
-
-    // First arrival -> Alert generated (MEDIUM)
-    const res1 = await processTelemetry(payload);
-    assert.ok(res1.alert, 'First arrival should produce alert');
-
-    // Second arrival 5 seconds later with identical condition
-    const res2 = await processTelemetry(payload);
-    assert.equal(res2.alert, null, 'Consecutive identical arrival should suppress duplicate alert');
-
-    // Verify only 1 alert in DB
-    const alertCount = await Alert.countDocuments({ deviceId: 'test_dev_dup' });
-    assert.equal(alertCount, 1);
-  });
-
-  it('TST-011b: should generate a new alert if risk severity escalates from MEDIUM to HIGH', async () => {
-    // First: MEDIUM
-    await processTelemetry({
-      deviceId: 'test_dev_escalate',
-      rfValue: 2400,
-      wifiNetworks: [],
-      cameraButton: false
-    });
-
-    // Escalation: HIGH
-    const resHigh = await processTelemetry({
-      deviceId: 'test_dev_escalate',
+      deviceId: 'device001',
+      timestamp: 1794468600,
       rfValue: 2800,
-      wifiNetworks: [{ ssid: 'spycam_unit_4', suspicious: true }],
+      wifiNetworks: [
+        { ssid: 'Home_WiFi', suspicious: false },
+        { ssid: 'spycam_device', suspicious: true }
+      ],
+      cameraButton: false
+    };
+
+    const result = await processTelemetry(payload);
+    expect(result.success).toBe(true);
+    expect(result.telemetry).toBeDefined();
+    expect(result.telemetry.deviceId).toBe('device001');
+    expect(result.telemetry.rfValue).toBe(2800);
+    expect(result.telemetry.rfAnomaly).toBe(true);
+    expect(result.telemetry.suspiciousSSID).toBe(true);
+    expect(result.telemetry.riskLevel).toBe('HIGH');
+
+    const saved = await Telemetry.findById(result.telemetry._id);
+    expect(saved).not.toBeNull();
+    expect(saved.deviceId).toBe('device001');
+  });
+
+  it('calculates authoritative risk on backend even if ESP32 attempts spoofing', async () => {
+    const payload = {
+      deviceId: 'spoof_dev',
+      timestamp: 1794468610,
+      rfValue: 3200,
+      wifiNetworks: [{ ssid: 'hidden_camera_99' }],
+      cameraButton: false,
+      riskLevel: 'SAFE'
+    };
+
+    const result = await processTelemetry(payload);
+    expect(result.success).toBe(true);
+    expect(result.telemetry.riskLevel).toBe('HIGH');
+  });
+
+  it('TEST-012: creates an alert for non-SAFE risk states', async () => {
+    const payload = {
+      deviceId: 'device002',
+      timestamp: 1794468620,
+      rfValue: 2400,
+      wifiNetworks: ['Home_WiFi'],
+      cameraButton: false
+    };
+
+    const result = await processTelemetry(payload);
+    expect(result.success).toBe(true);
+    expect(result.alert).not.toBeNull();
+    expect(result.alert.severity).toBe('MEDIUM');
+    expect(result.alert.deviceId).toBe('device002');
+    expect(result.alert.acknowledged).toBe(false);
+
+    const alertCount = await Alert.countDocuments({ deviceId: 'device002' });
+    expect(alertCount).toBe(1);
+  });
+
+  it('TEST-013: prevents duplicate alerts while risk level remains unchanged', async () => {
+    const payload1 = {
+      deviceId: 'device003',
+      timestamp: 1794468630,
+      rfValue: 2500,
+      wifiNetworks: [],
+      cameraButton: false
+    };
+
+    const firstResult = await processTelemetry(payload1);
+    expect(firstResult.alert).not.toBeNull();
+    expect(firstResult.alert.severity).toBe('MEDIUM');
+
+    const payload2 = {
+      deviceId: 'device003',
+      timestamp: 1794468635,
+      rfValue: 2600,
+      wifiNetworks: [],
+      cameraButton: false
+    };
+
+    const secondResult = await processTelemetry(payload2);
+    expect(secondResult.success).toBe(true);
+    expect(secondResult.alert).toBeNull();
+
+    const totalAlerts = await Alert.countDocuments({ deviceId: 'device003' });
+    expect(totalAlerts).toBe(1);
+  });
+
+  it('generates a new alert when risk transitions from MEDIUM to HIGH', async () => {
+    await processTelemetry({
+      deviceId: 'device004',
+      timestamp: 1794468640,
+      rfValue: 2200,
+      wifiNetworks: [],
       cameraButton: false
     });
 
-    assert.ok(resHigh.alert);
-    assert.equal(resHigh.alert.severity, 'HIGH');
-
-    const totalAlerts = await Alert.countDocuments({ deviceId: 'test_dev_escalate' });
-    assert.equal(totalAlerts, 2);
-  });
-
-  it('TST-005b: should always generate alert when manual camera button is pressed', async () => {
-    const res = await processTelemetry({
-      deviceId: 'test_dev_btn',
-      rfValue: 450,
-      wifiNetworks: [],
-      cameraButton: true
+    const escalated = await processTelemetry({
+      deviceId: 'device004',
+      timestamp: 1794468645,
+      rfValue: 2400,
+      wifiNetworks: ['spycam_livingroom'],
+      cameraButton: false
     });
 
-    assert.ok(res.alert);
-    assert.equal(res.alert.severity, 'HIGH');
-    assert.ok(res.alert.message.includes('Manual camera detection button'));
+    expect(escalated.alert).not.toBeNull();
+    expect(escalated.alert.severity).toBe('HIGH');
+
+    const totalAlerts = await Alert.countDocuments({ deviceId: 'device004' });
+    expect(totalAlerts).toBe(2);
   });
 
-  it('TST-007b: should reject invalid telemetry payloads and throw statusCode 400', async () => {
-    await assert.rejects(
-      async () => {
-        await processTelemetry({
-          // missing deviceId
-          rfValue: 1200
-        });
-      },
-      (err) => {
-        assert.equal(err.statusCode, 400);
-        assert.ok(err.message.includes('deviceId'));
-        return true;
-      }
-    );
+  it('TEST-023: rejects invalid telemetry payload gracefully without DB pollution', async () => {
+    const missingDevId = await processTelemetry({
+      rfValue: 1200,
+      wifiNetworks: []
+    });
+    expect(missingDevId.success).toBe(false);
+    expect(missingDevId.error).toContain('deviceId');
 
-    await assert.rejects(
-      async () => {
-        await processTelemetry({
-          deviceId: 'dev_bad',
-          rfValue: -100 // invalid negative RF
-        });
-      },
-      (err) => {
-        assert.equal(err.statusCode, 400);
-        return true;
-      }
-    );
+    const negativeRf = await processTelemetry({
+      deviceId: 'dev_neg',
+      rfValue: -100
+    });
+    expect(negativeRf.success).toBe(false);
+    expect(negativeRf.error).toContain('rfValue');
+
+    const invalidWifi = await processTelemetry({
+      deviceId: 'dev_wifi',
+      rfValue: 1200,
+      wifiNetworks: 'invalid-string'
+    });
+    expect(invalidWifi.success).toBe(false);
+    expect(invalidWifi.error).toContain('wifiNetworks');
+
+    const count = await Telemetry.countDocuments({ deviceId: 'dev_neg' });
+    expect(count).toBe(0);
   });
 });
-

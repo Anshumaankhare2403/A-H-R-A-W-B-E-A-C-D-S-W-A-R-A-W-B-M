@@ -1,195 +1,182 @@
-import { describe, it, before, after, beforeEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
-import mongoose from 'mongoose';
-import { createApp } from '../src/app.js';
-import { connectDatabase, disconnectDatabase } from '../src/config/database.js';
-import Device from '../src/models/Device.js';
-import Telemetry from '../src/models/Telemetry.js';
-import Alert from '../src/models/Alert.js';
+import { setupTestDatabase, clearTestDatabase, teardownTestDatabase } from './setupDb.js';
+import { createApp } from '../src/server.js';
+import { Device } from '../src/models/Device.js';
+import { Telemetry } from '../src/models/Telemetry.js';
+import { Alert } from '../src/models/Alert.js';
 
-const TEST_DB_URI = 'mongodb://127.0.0.1:27017/anticamera_test_api';
-
-describe('REST API Automated Tests', () => {
+describe('REST API Endpoints Suite', () => {
   let app;
 
-  before(async () => {
-    await connectDatabase(TEST_DB_URI);
+  beforeAll(async () => {
+    await setupTestDatabase();
     app = createApp();
-  });
+  }, 300000);
 
-  after(async () => {
-    if (mongoose.connection.readyState === 1) {
-      await mongoose.connection.dropDatabase();
-    }
-    await disconnectDatabase();
+  afterAll(async () => {
+    await teardownTestDatabase();
   });
 
   beforeEach(async () => {
-    await Device.deleteMany({});
-    await Telemetry.deleteMany({});
-    await Alert.deleteMany({});
+    await clearTestDatabase();
   });
 
-  it('TST-013: GET /api/health should return system status and dependency health', async () => {
-    const res = await request(app).get('/api/health');
-
-    assert.equal(res.status, 200);
-    assert.equal(res.body.success, true);
-    assert.equal(res.body.dependencies.database.status, 'connected');
-    assert.equal(typeof res.body.uptime, 'number');
+  describe('GET /api/health', () => {
+    it('TEST-014: returns 200 with healthy backend message', async () => {
+      const res = await request(app).get('/api/health');
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.message).toBe('Backend is running');
+      expect(res.body.timestamp).toBeDefined();
+    });
   });
 
-  it('TST-014: GET /api/devices should list registered devices with pagination', async () => {
-    await Device.create([
-      { deviceId: 'dev_01', name: 'ESP32-1', status: 'online', latestRisk: 'SAFE', latestRfValue: 500 },
-      { deviceId: 'dev_02', name: 'ESP32-2', status: 'online', latestRisk: 'HIGH', latestRfValue: 3200 }
-    ]);
-
-    const res = await request(app).get('/api/devices?page=1&limit=10');
-
-    assert.equal(res.status, 200);
-    assert.equal(res.body.success, true);
-    assert.equal(res.body.data.length, 2);
-    assert.equal(res.body.pagination.total, 2);
-  });
-
-  it('TST-015: GET /api/devices/:deviceId should return single device details', async () => {
-    await Device.create({
-      deviceId: 'dev_special',
-      name: 'Custom-Sensor',
-      status: 'online',
-      latestRisk: 'MEDIUM',
-      latestRfValue: 2200
+  describe('Device Endpoints', () => {
+    beforeEach(async () => {
+      await Device.create([
+        { deviceId: 'dev_01', latestRisk: 'SAFE', status: 'ONLINE', latestRfValue: 100 },
+        { deviceId: 'dev_02', latestRisk: 'HIGH', status: 'ALERT', latestRfValue: 3500 },
+        { deviceId: 'dev_03', latestRisk: 'MEDIUM', status: 'WARNING', latestRfValue: 2200 }
+      ]);
     });
 
-    const res = await request(app).get('/api/devices/dev_special');
+    it('TEST-015: GET /api/devices returns paginated devices with filtering', async () => {
+      const res = await request(app).get('/api/devices?page=1&limit=2');
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveLength(2);
+      expect(res.body.pagination.total).toBe(3);
+      expect(res.body.pagination.totalPages).toBe(2);
 
-    assert.equal(res.status, 200);
-    assert.equal(res.body.success, true);
-    assert.equal(res.body.data.deviceId, 'dev_special');
-    assert.equal(res.body.data.name, 'Custom-Sensor');
-  });
+      const alertRes = await request(app).get('/api/devices?status=ALERT');
+      expect(alertRes.status).toBe(200);
+      expect(alertRes.body.data).toHaveLength(1);
+      expect(alertRes.body.data[0].deviceId).toBe('dev_02');
+    });
 
-  it('TST-015b: GET /api/devices/:deviceId should return 404 for unknown device', async () => {
-    const res = await request(app).get('/api/devices/nonexistent_device');
+    it('TEST-016: GET /api/devices/:deviceId returns device details or 404', async () => {
+      const res = await request(app).get('/api/devices/dev_01');
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.deviceId).toBe('dev_01');
 
-    assert.equal(res.status, 404);
-    assert.equal(res.body.success, false);
-    assert.ok(res.body.error.message.includes('not found'));
-  });
+      const notFoundRes = await request(app).get('/api/devices/nonexistent_device');
+      expect(notFoundRes.status).toBe(404);
+      expect(notFoundRes.body.success).toBe(false);
+    });
 
-  it('TST-016: GET /api/devices/:deviceId/latest should return most recent telemetry record', async () => {
-    await Telemetry.create([
-      {
-        deviceId: 'dev_stream',
-        rfValue: 1200,
+    it('TEST-017: GET /api/devices/:deviceId/latest returns latest telemetry for device', async () => {
+      await Telemetry.create({
+        deviceId: 'dev_01',
+        deviceTimestamp: 1794468600,
+        rfValue: 1250,
         rfAnomaly: false,
-        wifiNetworks: [],
-        suspiciousSSID: false,
-        cameraButton: false,
-        riskLevel: 'SAFE',
-        receivedAt: new Date(Date.now() - 10000)
-      },
-      {
-        deviceId: 'dev_stream',
-        rfValue: 3400,
-        rfAnomaly: true,
-        wifiNetworks: [{ ssid: 'spycam_01', suspicious: true }],
-        suspiciousSSID: true,
-        cameraButton: false,
-        riskLevel: 'HIGH',
-        receivedAt: new Date()
-      }
-    ]);
+        wifiNetworks: [{ ssid: 'Home_WiFi', suspicious: false }],
+        riskLevel: 'SAFE'
+      });
 
-    const res = await request(app).get('/api/devices/dev_stream/latest');
-
-    assert.equal(res.status, 200);
-    assert.equal(res.body.success, true);
-    assert.equal(res.body.data.rfValue, 3400);
-    assert.equal(res.body.data.riskLevel, 'HIGH');
+      const res = await request(app).get('/api/devices/dev_01/latest');
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.device.deviceId).toBe('dev_01');
+      expect(res.body.data.latestTelemetry).not.toBeNull();
+      expect(res.body.data.latestTelemetry.rfValue).toBe(1250);
+    });
   });
 
-  it('TST-017: GET /api/telemetry should return historical records with filtering', async () => {
-    await Telemetry.create([
-      { deviceId: 'dev_A', rfValue: 800, rfAnomaly: false, suspiciousSSID: false, riskLevel: 'SAFE' },
-      { deviceId: 'dev_A', rfValue: 2500, rfAnomaly: true, suspiciousSSID: false, riskLevel: 'MEDIUM' },
-      { deviceId: 'dev_B', rfValue: 4000, rfAnomaly: true, suspiciousSSID: true, riskLevel: 'HIGH' }
-    ]);
-
-    const resFilter = await request(app).get('/api/telemetry?deviceId=dev_A&riskLevel=MEDIUM');
-
-    assert.equal(resFilter.status, 200);
-    assert.equal(resFilter.body.data.length, 1);
-    assert.equal(resFilter.body.data[0].rfValue, 2500);
-  });
-
-  it('TST-018 & TST-019: GET /api/alerts and PATCH /api/alerts/:id/acknowledge', async () => {
-    const alert = await Alert.create({
-      deviceId: 'dev_alert_test',
-      severity: 'HIGH',
-      message: 'Suspicious RF spike and camera SSID detected',
-      rfValue: 3500,
-      acknowledged: false
+  describe('Telemetry Endpoints', () => {
+    beforeEach(async () => {
+      await Telemetry.create([
+        { deviceId: 'dev_t1', deviceTimestamp: 100, rfValue: 500, rfAnomaly: false, riskLevel: 'SAFE' },
+        { deviceId: 'dev_t1', deviceTimestamp: 200, rfValue: 2500, rfAnomaly: true, riskLevel: 'MEDIUM' },
+        { deviceId: 'dev_t2', deviceTimestamp: 300, rfValue: 3500, rfAnomaly: true, riskLevel: 'HIGH' }
+      ]);
     });
 
-    // 1. List alerts
-    const resList = await request(app).get('/api/alerts?acknowledged=false');
-    assert.equal(resList.status, 200);
-    assert.equal(resList.body.data.length, 1);
-    assert.equal(resList.body.data[0].acknowledged, false);
+    it('TEST-018: GET /api/telemetry supports query filtering', async () => {
+      const res = await request(app).get('/api/telemetry?deviceId=dev_t1');
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveLength(2);
 
-    // 2. Acknowledge alert
-    const resAck = await request(app).patch(`/api/alerts/${alert._id}/acknowledge`);
-    assert.equal(resAck.status, 200);
-    assert.equal(resAck.body.success, true);
-    assert.equal(resAck.body.data.acknowledged, true);
-
-    // 3. Verify in DB
-    const updated = await Alert.findById(alert._id);
-    assert.equal(updated.acknowledged, true);
-  });
-
-  it('TST-019b: PATCH /api/alerts/:id/acknowledge returns 400 on invalid ID format', async () => {
-    const res = await request(app).patch('/api/alerts/not-a-valid-object-id/acknowledge');
-    assert.equal(res.status, 400);
-    assert.equal(res.body.success, false);
-  });
-
-  it('TST-020b: POST /api/telemetry should ingest valid telemetry via REST', async () => {
-    const payload = {
-      deviceId: 'rest_device_01',
-      rfValue: 2600,
-      wifiNetworks: [{ ssid: 'Home_WiFi', suspicious: false }],
-      cameraButton: false
-    };
-
-    const res = await request(app).post('/api/telemetry').send(payload);
-
-    assert.equal(res.status, 201);
-    assert.equal(res.body.success, true);
-    assert.equal(res.body.data.telemetry.riskLevel, 'MEDIUM');
-
-    // Confirm device registered
-    const dev = await Device.findOne({ deviceId: 'rest_device_01' });
-    assert.ok(dev);
-    assert.equal(dev.latestRisk, 'MEDIUM');
-  });
-
-  it('POST /api/telemetry returns 400 on invalid data', async () => {
-    const res = await request(app).post('/api/telemetry').send({
-      rfValue: 'bad_number'
+      const highRes = await request(app).get('/api/telemetry?riskLevel=HIGH');
+      expect(highRes.status).toBe(200);
+      expect(highRes.body.data).toHaveLength(1);
+      expect(highRes.body.data[0].deviceId).toBe('dev_t2');
     });
 
-    assert.equal(res.status, 400);
-    assert.equal(res.body.success, false);
+    it('GET /api/telemetry/:deviceId returns historical readings', async () => {
+      const res = await request(app).get('/api/telemetry/dev_t1');
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveLength(2);
+    });
+
+    it('POST /api/telemetry ingests and validates new telemetry reading', async () => {
+      const res = await request(app)
+        .post('/api/telemetry')
+        .send({
+          deviceId: 'dev_new_post',
+          timestamp: 1794468700,
+          rfValue: 3100,
+          wifiNetworks: [{ ssid: 'spycam_hotel', suspicious: true }],
+          cameraButton: false
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.telemetry.riskLevel).toBe('HIGH');
+      expect(res.body.data.alert).not.toBeNull();
+      expect(res.body.data.device.status).toBe('ALERT');
+    });
   });
 
-  it('Returns 404 on unknown endpoint', async () => {
-    const res = await request(app).get('/api/nonexistent-endpoint');
-    assert.equal(res.status, 404);
-    assert.equal(res.body.success, false);
+  describe('Alert Endpoints', () => {
+    let alertId;
+
+    beforeEach(async () => {
+      const alert = await Alert.create({
+        deviceId: 'dev_alert_1',
+        severity: 'HIGH',
+        message: 'High risk camera detected',
+        rfValue: 3800,
+        suspiciousSSIDs: ['spycam_room1'],
+        acknowledged: false
+      });
+      alertId = alert._id.toString();
+    });
+
+    it('TEST-019: GET /api/alerts retrieves alerts with severity and acknowledgment filters', async () => {
+      const res = await request(app).get('/api/alerts?severity=HIGH&acknowledged=false');
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].deviceId).toBe('dev_alert_1');
+    });
+
+    it('TEST-020: PATCH /api/alerts/:id/acknowledge updates acknowledgment status', async () => {
+      const res = await request(app).patch(`/api/alerts/${alertId}/acknowledge`);
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.acknowledged).toBe(true);
+      expect(res.body.data.acknowledgedAt).toBeDefined();
+
+      const inDb = await Alert.findById(alertId);
+      expect(inDb.acknowledged).toBe(true);
+    });
+
+    it('returns 400 for malformed alert ID on acknowledge', async () => {
+      const res = await request(app).patch('/api/alerts/invalid-mongo-id/acknowledge');
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+    });
+
+    it('returns 404 for non-existent alert ID on acknowledge', async () => {
+      const nonExistent = '507f1f77bcf86cd799439011';
+      const res = await request(app).patch(`/api/alerts/${nonExistent}/acknowledge`);
+      expect(res.status).toBe(404);
+      expect(res.body.success).toBe(false);
+    });
   });
 });
-

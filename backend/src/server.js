@@ -1,80 +1,112 @@
 import http from 'http';
-import createApp from './app.js';
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
 import config from './config/environment.js';
 import { connectDatabase, disconnectDatabase } from './config/database.js';
-import { disconnectMqtt } from './config/mqtt.js';
-import { initSocket } from './sockets/socketHandler.js';
-import { startMqttService } from './services/mqttService.js';
+import { initSocketIO } from './sockets/socketHandler.js';
+import { startMqttSubscriber, stopMqttSubscriber } from './services/mqttService.js';
+import deviceRoutes from './routes/deviceRoutes.js';
+import telemetryRoutes from './routes/telemetryRoutes.js';
+import alertRoutes from './routes/alertRoutes.js';
+import notFound from './middleware/notFound.js';
+import errorHandler from './middleware/errorHandler.js';
 
-async function startServer() {
-  console.log('====================================================');
-  console.log(' Starting Hybrid Anti-Camera Detection Backend...  ');
-  console.log('====================================================');
+export function createApp() {
+  const app = express();
 
-  // 1. Connect MongoDB
-  try {
-    await connectDatabase();
-  } catch (dbErr) {
-    console.error('[Startup Warning] MongoDB connection failed:', dbErr.message);
-    console.warn('[Startup Warning] Server will start, but database-dependent operations will fail until MongoDB is available.');
+  app.use(helmet());
+  app.use(cors({ origin: config.cors.origin }));
+  if (config.env !== 'test') {
+    app.use(morgan('dev'));
   }
+  app.use(express.json({ limit: '1mb' }));
+  app.use(express.urlencoded({ extended: true }));
 
-  // 2. Create Express App & HTTP Server
-  const app = createApp();
-  const server = http.createServer(app);
-
-  // 3. Initialize Socket.IO
-  initSocket(server, config.corsOrigin);
-  console.log('[Socket.IO] Server initialized and listening for events.');
-
-  // 4. Start MQTT Subscriber Service
-  try {
-    startMqttService();
-  } catch (mqttErr) {
-    console.error('[Startup Warning] MQTT initialization warning:', mqttErr.message);
-  }
-
-  // 5. Start HTTP Server Listening
-  server.listen(config.port, () => {
-    console.log(`[HTTP Server] Backend API running at http://localhost:${config.port}`);
-    console.log(`[HTTP Server] Health check available at http://localhost:${config.port}/api/health`);
-    console.log(`[Configuration] RF Threshold: ${config.rfThreshold}`);
-    console.log(`[Configuration] Environment: ${config.nodeEnv}`);
+  app.get('/api/health', (req, res) => {
+    res.status(200).json({
+      success: true,
+      message: 'Backend is running',
+      environment: config.env,
+      timestamp: new Date().toISOString()
+    });
   });
 
-  // Graceful Shutdown
-  const handleShutdown = async (signal) => {
-    console.log(`\n[Server] Received ${signal}. Commencing graceful shutdown...`);
+  app.use('/api/devices', deviceRoutes);
+  app.use('/api/telemetry', telemetryRoutes);
+  app.use('/api/alerts', alertRoutes);
 
-    server.close(() => {
-      console.log('[HTTP Server] HTTP connections closed.');
+  app.use(notFound);
+  app.use(errorHandler);
+
+  return app;
+}
+
+export async function createServer(options = {}) {
+  const app = createApp();
+  const server = http.createServer(app);
+  const io = initSocketIO(server);
+
+  return { app, server, io };
+}
+
+let runningServer = null;
+
+export async function startServer(customPort = null, customMongoUri = null, customMqttUrl = null) {
+  const port = customPort || config.port;
+
+  await connectDatabase(customMongoUri);
+
+  const { app, server, io } = await createServer();
+
+  await new Promise((resolve) => {
+    runningServer = server.listen(port, () => {
+      console.log(`[Server] Anti-Camera Backend running in ${config.env} mode on http://localhost:${port}`);
+      resolve();
     });
+  });
 
+  if (config.env !== 'test') {
     try {
-      await disconnectMqtt();
-      await disconnectDatabase();
-      console.log('[Server] Graceful shutdown completed cleanly.');
-      process.exit(0);
-    } catch (err) {
-      console.error('[Server] Error during shutdown:', err);
-      process.exit(1);
+      startMqttSubscriber(customMqttUrl);
+    } catch (mqttErr) {
+      console.warn(`[Server] MQTT Subscriber failed to start: ${mqttErr.message}`);
     }
+  }
+
+  return { app, server: runningServer, io };
+}
+
+export async function stopServer() {
+  if (runningServer) {
+    await new Promise((resolve) => runningServer.close(resolve));
+    runningServer = null;
+    console.log('[Server] HTTP server stopped');
+  }
+  await stopMqttSubscriber();
+  await disconnectDatabase();
+}
+
+const isDirectExecution = process.argv[1] && (
+  process.argv[1].endsWith('server.js') ||
+  process.argv[1].endsWith('server')
+);
+
+if (isDirectExecution) {
+  startServer().catch((err) => {
+    console.error(`[Server] Fatal startup error: ${err.message}`);
+    process.exit(1);
+  });
+
+  const handleShutdown = async (signal) => {
+    console.log(`[Server] Received ${signal}. Shutting down gracefully...`);
+    await stopServer();
+    process.exit(0);
   };
 
   process.on('SIGINT', () => handleShutdown('SIGINT'));
   process.on('SIGTERM', () => handleShutdown('SIGTERM'));
-
-  return { app, server };
 }
 
-// Start if executed directly
-if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
-  startServer().catch((err) => {
-    console.error('[Fatal Error] Failed to start server:', err);
-    process.exit(1);
-  });
-}
-
-export { startServer };
-export default startServer;
-
+export default { createApp, createServer, startServer, stopServer };

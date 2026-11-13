@@ -31,14 +31,14 @@ class SSD1306(framebuf.FrameBuffer):
 
     def init_display(self):
         for cmd in (
-            SET_DISP,
+            SET_DISP | 0x00,
             SET_MEM_ADDR, 0x00,
-            SET_DISP_START_LINE,
+            SET_DISP_START_LINE | 0x00,
             SET_SEG_REMAP | 0x01,
             SET_MUX_RATIO, self.height - 1,
             SET_COM_OUT_DIR | 0x08,
             SET_DISP_OFFSET, 0x00,
-            SET_COM_PIN_CFG, 0x02 if self.height == 32 else 0x12,
+            SET_COM_PIN_CFG, 0x02 if self.width > 2 * self.height else 0x12,
             SET_DISP_CLK_DIV, 0x80,
             SET_PRECHARGE, 0x22 if self.external_vcc else 0xF1,
             SET_VCOM_DESEL, 0x30,
@@ -53,7 +53,7 @@ class SSD1306(framebuf.FrameBuffer):
         self.show()
 
     def poweroff(self):
-        self.write_cmd(SET_DISP)
+        self.write_cmd(SET_DISP | 0x00)
 
     def poweron(self):
         self.write_cmd(SET_DISP | 0x01)

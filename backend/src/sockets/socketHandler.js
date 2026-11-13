@@ -1,11 +1,12 @@
-import { Server } from 'socket.io';
+import { Server as SocketIOServer } from 'socket.io';
+import config from '../config/environment.js';
 
 let ioInstance = null;
 
-export function initSocket(server, corsOrigin = '*') {
-  ioInstance = new Server(server, {
+export function initSocketIO(httpServer) {
+  ioInstance = new SocketIOServer(httpServer, {
     cors: {
-      origin: corsOrigin,
+      origin: config.cors.origin,
       methods: ['GET', 'POST', 'PATCH']
     }
   });
@@ -13,77 +14,65 @@ export function initSocket(server, corsOrigin = '*') {
   ioInstance.on('connection', (socket) => {
     console.log(`[Socket.IO] Client connected: ${socket.id}`);
 
-    // Join device-specific room if requested
     socket.on('subscribe:device', (deviceId) => {
       if (deviceId) {
         socket.join(`device:${deviceId}`);
-        console.log(`[Socket.IO] Client ${socket.id} subscribed to room device:${deviceId}`);
       }
     });
 
     socket.on('unsubscribe:device', (deviceId) => {
       if (deviceId) {
         socket.leave(`device:${deviceId}`);
-        console.log(`[Socket.IO] Client ${socket.id} unsubscribed from room device:${deviceId}`);
       }
     });
 
-    socket.on('disconnect', (reason) => {
-      console.log(`[Socket.IO] Client disconnected: ${socket.id} (${reason})`);
-    });
+    socket.on('disconnect', () => {});
   });
 
   return ioInstance;
 }
 
-export function getIO() {
+export function getSocketIO() {
   return ioInstance;
 }
 
-export function broadcastTelemetry(telemetry) {
+export function emitTelemetry(telemetryData) {
   if (!ioInstance) return;
-  ioInstance.emit('device:telemetry', telemetry);
-  if (telemetry?.deviceId) {
-    ioInstance.to(`device:${telemetry.deviceId}`).emit('device:telemetry', telemetry);
+  ioInstance.emit('device:telemetry', telemetryData);
+  if (telemetryData.deviceId) {
+    ioInstance.to(`device:${telemetryData.deviceId}`).emit('device:telemetry', telemetryData);
   }
 }
 
-export function broadcastStatus(device) {
+export function emitDeviceStatus(deviceData) {
   if (!ioInstance) return;
-  ioInstance.emit('device:status', device);
-  if (device?.deviceId) {
-    ioInstance.to(`device:${device.deviceId}`).emit('device:status', device);
+  ioInstance.emit('device:status', deviceData);
+  if (deviceData.deviceId) {
+    ioInstance.to(`device:${deviceData.deviceId}`).emit('device:status', deviceData);
   }
 }
 
-export function broadcastRiskChanged(payload) {
+export function emitRiskChanged(changeData) {
   if (!ioInstance) return;
-  ioInstance.emit('risk:changed', payload);
-  if (payload?.deviceId) {
-    ioInstance.to(`device:${payload.deviceId}`).emit('risk:changed', payload);
+  ioInstance.emit('risk:changed', changeData);
+  if (changeData.deviceId) {
+    ioInstance.to(`device:${changeData.deviceId}`).emit('risk:changed', changeData);
   }
 }
 
-export function broadcastAlert(alert) {
+export function emitAlert(alertData) {
   if (!ioInstance) return;
-  ioInstance.emit('alert:new', alert);
-  if (alert?.severity === 'HIGH') {
-    ioInstance.emit('alert:high-risk', alert);
-  }
-  if (alert?.deviceId) {
-    ioInstance.to(`device:${alert.deviceId}`).emit('alert:new', alert);
-    if (alert?.severity === 'HIGH') {
-      ioInstance.to(`device:${alert.deviceId}`).emit('alert:high-risk', alert);
-    }
+  ioInstance.emit('alert:new', alertData);
+  if (alertData.severity === 'HIGH') {
+    ioInstance.emit('alert:high-risk', alertData);
   }
 }
 
 export default {
-  initSocket,
-  getIO,
-  broadcastTelemetry,
-  broadcastStatus,
-  broadcastRiskChanged,
-  broadcastAlert
+  initSocketIO,
+  getSocketIO,
+  emitTelemetry,
+  emitDeviceStatus,
+  emitRiskChanged,
+  emitAlert
 };
-
